@@ -1,23 +1,26 @@
 import asyncio
 import io
 import logging
+import threading
 from datetime import datetime, timedelta
+
 import aiosqlite
 import httpx
 import qrcode
+import streamlit as st
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 # =====================================================================
-# ⚙️ READY-TO-USE CONFIGURATION (EXACT USER DETAILS)
+# ⚙️ CONFIGURATION & CREDENTIALS
 # =====================================================================
 BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Mrx477"
-YOUR_UPI_ID = "9696159863.wallet@phonepe"
+ADMIN_USERNAME = "@Your_Telegram_Username"   # 👈 Replace with your personal Telegram handle (e.g. @Vikas_Support)
+YOUR_UPI_ID = "yourupi@paytm"                # 👈 Replace with your GPay/PhonePe/Paytm UPI ID
 YOUR_NAME = "Parivahan Elite Service"
-FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/"
+FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/" # Your RTO API Endpoint
 DB_FILE = "bot_database.db"
 
 logging.basicConfig(level=logging.INFO)
@@ -87,7 +90,7 @@ def generate_upi_qr(upi_id: str, name: str, amount: int, note: str) -> bytes:
     img.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-# ---------------- BOT HANDLERS ----------------
+# ---------------- TELEGRAM BOT HANDLERS ----------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
@@ -97,7 +100,7 @@ async def cmd_start(message: types.Message):
 
     status_text = (
         "✨ <b>VEHICLE ELITE INTELLIGENCE BOT</b> ✨\n"
-        "━━━━━━━ Card System ━━━━━━━\n\n"
+        "━━━━━━━ Dashboard ━━━━━━━\n\n"
         "👤 <b>ACCOUNT DASHBOARD</b>\n"
         f"┣ 🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"┣ ⚡ <b>Free Credits:</b> <code>{credits} Searches</code>\n"
@@ -175,11 +178,11 @@ async def auto_expire_qr(msg: types.Message, delay_seconds: int):
     await asyncio.sleep(delay_seconds)
     try:
         await msg.delete()
-        await msg.answer("⌛ <b>QR Code Expired!</b> High speed gateway session complete ho gaya hai. Wapas /start karke naya QR generate karein.", parse_mode="HTML")
+        await msg.answer("⌛ <b>QR Code Expired!</b> Time out ho gaya hai. Dobara /start karke naya QR generate karein.", parse_mode="HTML")
     except Exception:
         pass
 
-# ---------------- ADMIN ACTIVATION ----------------
+# ---------------- ADMIN ACTIVATION COMMAND ----------------
 @dp.message(Command("activate"))
 async def admin_activate(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -238,7 +241,6 @@ async def search_vehicle(message: types.Message):
                 json_data = resp.json()
                 rc_data = json_data.get("rc_details", {}).get("data", [])[0]
 
-                # Data Formatting
                 v_num = rc_data.get('regn_no', vehicle_no)
                 reg_dt = rc_data.get('regn_dt', 'N/A')
                 rto_auth = f"{rc_data.get('rto', 'N/A')}, {rc_data.get('state', 'N/A')}"
@@ -268,12 +270,10 @@ async def search_vehicle(message: types.Message):
                 puc = rc_data.get('puc_upto', 'N/A')
                 status = rc_data.get('status', 'ACTIVE')
 
-                # Dynamic Status Badges
                 status_badge = "✅ ACTIVE" if status.upper() == "ACTIVE" else "🔴 INACTIVE"
                 fit_badge = f"✅ {fitness}" if fitness != "N/A" else "⚠️ EXPIRED"
                 puc_badge = f"✅ {puc}" if puc != "N/A" else "⚠️ EXPIRED"
 
-                # 💎 ULTRA PREMIUM RESPONSE TEMPLATE
                 ultra_report = f"""📑 <b>𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓</b>
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
 
@@ -301,7 +301,7 @@ async def search_vehicle(message: types.Message):
 ┠ <b>𝐂𝐡𝐚𝐬𝐬𝐢𝐬</b>  : <code>{chassis}</code>
 ┖ <b>𝐄𝐧𝐠𝐢𝐧𝐞</b>   : <code>{engine}</code>
 
-🛡 <b>𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 &amp; 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄</b>
+🛡 <b>𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 &amp; 𝐂𝐎𝐌𝐏🇱𝐈𝐀𝐍𝐂𝐄</b>
 ┠ <b>𝐂𝐨𝐦𝐩𝐚𝐧𝐲</b>  : {ins_comp}
 ┠ <b>𝐏𝐨𝐥𝐢𝐜𝐲</b>   : <code>{policy}</code>
 ┠ <b>𝐄𝐱𝐩𝐢𝐫𝐲</b>   : {ins_upto}
@@ -323,14 +323,26 @@ async def search_vehicle(message: types.Message):
                 await message.answer(ultra_report, parse_mode="HTML")
             else:
                 await wait_msg.edit_text("❌ <b>Vehicle record not found in RTO Database.</b>", parse_mode="HTML")
-    except Exception as e:
+    except Exception:
         await wait_msg.edit_text("❌ <b>Server Error or Timeout. Please try again.</b>", parse_mode="HTML")
 
-# ---------------- MAIN ----------------
-async def main():
+# ---------------- BOT ASYNC RUNNER ----------------
+async def run_bot():
     await init_db()
-    print("🤖 Ultra-Premium Telegram Bot is Live!")
+    print("🤖 Telegram Bot thread is running...")
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def start_bot_thread():
+    asyncio.run(run_bot())
+
+# ---------------- STREAMLIT WEB WRAPPER ----------------
+# This keeps Streamlit Cloud running 24/7 on free tier
+if "bot_running" not in st.session_state:
+    st.session_state["bot_running"] = True
+    bot_thread = threading.Thread(target=start_bot_thread, daemon=True)
+    bot_thread.start()
+
+st.set_page_config(page_title="Vehicle Elite Bot Control Panel", page_icon="🏎")
+st.title("🏎 Vehicle Elite Telegram Bot Panel")
+st.success("🟢 Status: TELEGRAM BOT IS LIVE & RUNNING 24/7!")
+st.info("Aapka Telegram bot background thread me chal raha hai. Aap Streamlit Cloud dashboard se is link ko hamesha live rakh sakte hain.")
