@@ -14,10 +14,10 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 # ⚙️ CONFIGURATION
 # =====================================================================
-BOT_TOKEN = "8426663183:AAGuwB29q55WaphV3Lwm01B5RS529ZaCUDA"
+BOT_TOKEN = "BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc""
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Your_Telegram_Username"   # 👈 Apna Telegram Username dalein
-YOUR_UPI_ID = "yourupi@paytm"                # 👈 Apna UPI ID dalein
+ADMIN_USERNAME = "@vehicle_elite_bot"   # 👈 Apna Telegram Username dalein
+YOUR_UPI_ID = "9696159863.wallet@phonepe"                # 👈 Apna UPI ID dalein
 YOUR_NAME = "Parivahan Elite Service"
 FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/"
 DB_FILE = "bot_database.db"
