@@ -1,10 +1,12 @@
 import asyncio
 import io
 import logging
+import os
 from datetime import datetime, timedelta
 import aiosqlite
 import httpx
 import qrcode
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +16,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 BOT_TOKEN = "8426663183:AAGuwB29q55WaphV3Lwm01B5RS529ZaCUDA"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Your_Telegram_Username"   # 👈 Apna Telegram Username dalein (e.g. @Vikas_Support)
+ADMIN_USERNAME = "@Your_Telegram_Username"   # 👈 Apna Telegram Username dalein
 YOUR_UPI_ID = "yourupi@paytm"                # 👈 Apna UPI ID dalein
 YOUR_NAME = "Parivahan Elite Service"
 FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/"
@@ -23,6 +25,21 @@ DB_FILE = "bot_database.db"
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ---------------- DUMMY WEB SERVER FOR RENDER ----------------
+async def handle_ping(request):
+    return web.Response(text="Bot is running fine 24/7!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Dummy Web Server running on port {port}")
 
 # ---------------- DATABASE LOGIC ----------------
 async def init_db():
@@ -267,12 +284,10 @@ async def search_vehicle(message: types.Message):
                 puc = rc_data.get('puc_upto', 'N/A')
                 status = rc_data.get('status', 'ACTIVE')
 
-                # Dynamic Status Badges
                 status_badge = "✅ ACTIVE" if status.upper() == "ACTIVE" else "🔴 INACTIVE"
                 fit_badge = f"✅ {fitness}" if fitness != "N/A" else "⚠️ EXPIRED"
                 puc_badge = f"✅ {puc}" if puc != "N/A" else "⚠️ EXPIRED"
 
-                # 💎 ULTRA PREMIUM REPORT TEMPLATE (WITHOUT MOBILE NUMBER)
                 ultra_report = f"""📑 <b>𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓</b>
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
 
@@ -302,7 +317,7 @@ async def search_vehicle(message: types.Message):
 🛡 <b>𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 &amp; 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄</b>
 ┠ <b>𝐂𝐨𝐦𝐩𝐚𝐧𝐲</b>  : {ins_comp}
 ┠ <b>𝐏𝐨𝐥𝐢𝐜𝐲</b>   : <code>{policy}</code>
-┠ <b>𝐄𝐱Profiles</b>   : {ins_upto}
+┠ <b>𝐄𝐱𝐩𝐢𝐫𝐲</b>   : {ins_upto}
 ┠ <b>𝐑𝐨𝐚𝐝 𝐓𝐚𝐱</b> : {road_tax}
 ┠ <b>𝐅𝐢𝐭𝐧𝐞𝐬𝐬</b>   : {fit_badge}
 ┖ <b>𝐏𝐔𝐂𝐂</b>     : {puc_badge}
@@ -324,10 +339,11 @@ async def search_vehicle(message: types.Message):
     except Exception as e:
         await wait_msg.edit_text("❌ <b>Server Error or Timeout. Please try again.</b>", parse_mode="HTML")
 
-# ---------------- MAIN ----------------
+# ---------------- MAIN RUNNER ----------------
 async def main():
     await init_db()
-    print("🤖 Ultra-Premium Telegram Bot is Live!")
+    await start_web_server()
+    print("🤖 Ultra-Premium Telegram Bot is Live on Render Web Service!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
