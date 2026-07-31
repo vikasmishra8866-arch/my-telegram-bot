@@ -1,23 +1,21 @@
 import asyncio
 import io
 import logging
-import os
 from datetime import datetime, timedelta
 import aiosqlite
 import httpx
 import qrcode
-from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 # =====================================================================
-# ⚙️ CONFIGURATION
+# ⚙️ READY-TO-USE CONFIGURATION (EXACT USER DETAILS)
 # =====================================================================
-BOT_TOKEN = "BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc""
+BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@vehicle_elite_bot"   # 👈 Apna Telegram Username dalein
-YOUR_UPI_ID = "9696159863.wallet@phonepe"                # 👈 Apna UPI ID dalein
+ADMIN_USERNAME = "@Mrx477"
+YOUR_UPI_ID = "9696159863.wallet@phonepe"
 YOUR_NAME = "Parivahan Elite Service"
 FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/"
 DB_FILE = "bot_database.db"
@@ -25,21 +23,6 @@ DB_FILE = "bot_database.db"
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# ---------------- DUMMY WEB SERVER FOR RENDER ----------------
-async def handle_ping(request):
-    return web.Response(text="Bot is running fine 24/7!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/health", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Dummy Web Server running on port {port}")
 
 # ---------------- DATABASE LOGIC ----------------
 async def init_db():
@@ -114,8 +97,8 @@ async def cmd_start(message: types.Message):
 
     status_text = (
         "✨ <b>VEHICLE ELITE INTELLIGENCE BOT</b> ✨\n"
-        "━━━━━━━ Dashboard ━━━━━━━\n\n"
-        "👤 <b>ACCOUNT STATUS</b>\n"
+        "━━━━━━━ Card System ━━━━━━━\n\n"
+        "👤 <b>ACCOUNT DASHBOARD</b>\n"
         f"┣ 🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"┣ ⚡ <b>Free Credits:</b> <code>{credits} Searches</code>\n"
         f"┗ 💎 <b>Unlimited Pass:</b> <code>{'ACTIVE ✅' if active else 'INACTIVE ❌'}</code>\n\n"
@@ -264,6 +247,7 @@ async def search_vehicle(message: types.Message):
 
                 owner = rc_data.get('owner_name', 'N/A')
                 owner_sr = rc_data.get('owner_sr', '1st OWNER')
+                mobile = rc_data.get('mobile', 'N/A')
                 address = rc_data.get('address', 'N/A')
 
                 model = rc_data.get('maker_modal', 'N/A')
@@ -284,10 +268,12 @@ async def search_vehicle(message: types.Message):
                 puc = rc_data.get('puc_upto', 'N/A')
                 status = rc_data.get('status', 'ACTIVE')
 
+                # Dynamic Status Badges
                 status_badge = "✅ ACTIVE" if status.upper() == "ACTIVE" else "🔴 INACTIVE"
                 fit_badge = f"✅ {fitness}" if fitness != "N/A" else "⚠️ EXPIRED"
                 puc_badge = f"✅ {puc}" if puc != "N/A" else "⚠️ EXPIRED"
 
+                # 💎 ULTRA PREMIUM RESPONSE TEMPLATE
                 ultra_report = f"""📑 <b>𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓</b>
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
 
@@ -301,6 +287,7 @@ async def search_vehicle(message: types.Message):
 👤 <b>𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀𝐋𝐘𝐓𝐈𝐂𝐒</b>
 ┠ <b>𝐍𝐚𝐦𝐞</b>     : <b>{owner}</b>
 ┠ <b>𝐒𝐞𝐫𝐢𝐚𝐥</b>   : {owner_sr}
+┠ <b>𝐌𝐨𝐛𝐢𝐥𝐞</b>   : <code>{mobile}</code>
 ┖ <b>𝐀𝐝𝐝𝐫𝐞𝐬𝐬</b>  : {address}
 
 🚘 <b>𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒</b>
@@ -339,11 +326,10 @@ async def search_vehicle(message: types.Message):
     except Exception as e:
         await wait_msg.edit_text("❌ <b>Server Error or Timeout. Please try again.</b>", parse_mode="HTML")
 
-# ---------------- MAIN RUNNER ----------------
+# ---------------- MAIN ----------------
 async def main():
     await init_db()
-    await start_web_server()
-    print("🤖 Ultra-Premium Telegram Bot is Live on Render Web Service!")
+    print("🤖 Ultra-Premium Telegram Bot is Live!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
