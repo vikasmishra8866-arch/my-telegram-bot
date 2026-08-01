@@ -1,7 +1,5 @@
-aiogram>=3.0.0
-aiosqlite
-httpx
-qrcode
-pillow
-fastapi
-uvicorn
+pyTelegramBotAPI==4.14.0
+fastapi==0.104.1
+uvicorn==0.24.0
+requests==2.31.0
+python-dotenv==1.0.0
