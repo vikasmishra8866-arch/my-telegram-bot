@@ -21,7 +21,6 @@ bot = AsyncTeleBot(BOT_TOKEN)
 app = FastAPI()
 
 # ==================== IN-MEMORY DATABASE ====================
-# Storage structure: {user_id: {"free_searches": 2, "expiry": datetime_or_None}}
 user_data = {}
 
 def get_user(user_id):
@@ -30,7 +29,7 @@ def get_user(user_id):
     return user_data[user_id]
 
 def is_subscribed(user_id):
-    # Admin is ALWAYS allowed unlimited searches
+    # Admin gets instant unlimited access
     if user_id == ADMIN_ID:
         return True
     u = get_user(user_id)
@@ -49,24 +48,20 @@ def ping():
 
 # ==================== REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
-    # Extract nested data dictionary based on your API structure
-    data = {}
+    # Flatten nested JSON structures automatically
+    data = raw_json
     if isinstance(raw_json, dict):
         if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
-            inner_data = raw_json["rc_details"].get("data", [])
-            if isinstance(inner_data, list) and len(inner_data) > 0:
-                data = inner_data[0]
-            elif isinstance(inner_data, dict):
-                data = inner_data
+            inner = raw_json["rc_details"].get("data", raw_json["rc_details"])
+            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
         elif "data" in raw_json:
-            if isinstance(raw_json["data"], list) and len(raw_json["data"]) > 0:
-                data = raw_json["data"][0]
-            elif isinstance(raw_json["data"], dict):
-                data = raw_json["data"]
-        else:
-            data = raw_json
+            inner = raw_json["data"]
+            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
 
-    # Safe Key Extractor
+    if not isinstance(data, dict):
+        data = {}
+
+    # Comprehensive Multi-Key Fetcher
     def get_val(keys, default="N/A"):
         for k in keys:
             if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
@@ -74,11 +69,11 @@ def build_vehicle_report(raw_json):
         return default
 
     # 1. Registration Details
-    reg_no = get_val(["reg_no", "registration_number", "rc_number"])
-    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt"])
-    author = get_val(["rto", "rto_name", "registered_at"])
-    rto_code = get_val(["rto_code", "rc_rto_code"])
-    state = get_val(["state", "state_name"])
+    reg_no = get_val(["reg_no", "registration_number", "rc_number", "regNo"])
+    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt", "reg_date"])
+    author = get_val(["rto", "rto_name", "registered_at", "rto_location"])
+    rto_code = get_val(["rto_code", "rc_rto_code", "rtoCode"])
+    state = get_val(["state", "state_name", "state_code"])
     
     # 2. Ownership Analytics
     owner_1 = get_val(["owner_1_name"])
@@ -88,41 +83,48 @@ def build_vehicle_report(raw_json):
     elif owner_1 != "N/A":
         owner = owner_1
     else:
-        owner = get_val(["owner_name", "rc_owner_name"])
+        owner = get_val(["owner_name", "rc_owner_name", "owner"])
         
-    sr_no = get_val(["owner_sr_no"], "1")
-    serial = f"{sr_no}st OWNER" if sr_no == "1" else f"{sr_no}nd OWNER"
-    address = get_val(["address_1", "address", "present_address"])
+    sr_no = get_val(["owner_sr_no", "owner_serial", "owner_number"], "1")
+    serial = f"{sr_no}st OWNER" if sr_no in ["1", "1st"] else f"{sr_no}nd OWNER" if sr_no in ["2", "2nd"] else f"{sr_no} OWNER"
+    address = get_val(["address_1", "present_address", "address", "permanent_address"])
     
     # 3. Technical Specifications
-    model = get_val(["vehicle_model", "maker_modal", "model"])
-    maker = get_val(["maker", "maker_name"])
-    v_class = get_val(["vh_class", "vehicle_class"])
-    body = get_val(["body_type"], "PASSENGER / CAR")
-    color = get_val(["vehicle_color", "color"])
-    fuel = get_val(["fuel_type", "fuel"])
-    mfg_date = get_val(["manufactured_month_year", "mfg_date"])
-    chassis = get_val(["chasi_no", "chassis_number"])
-    engine = get_val(["engine_no", "engine_number"])
+    model = get_val(["vehicle_model", "maker_modal", "model", "rc_model"])
+    maker = get_val(["maker", "maker_name", "rc_maker_desc"])
+    v_class = get_val(["vh_class", "vehicle_class", "rc_vh_class_desc"])
+    body = get_val(["body_type", "rc_body_type_desc"], "PASSENGER / CAR")
+    color = get_val(["vehicle_color", "color", "rc_color"])
+    fuel = get_val(["fuel_type", "fuel", "rc_fuel_desc"])
+    mfg_date = get_val(["manufactured_month_year", "mfg_date", "rc_manu_month_yr"])
+    chassis = get_val(["chasi_no", "chassis_number", "rc_chasi_no"])
+    engine = get_val(["engine_no", "engine_number", "rc_eng_no"])
     
     # 4. Insurance & Compliance
-    ins_company = get_val(["insurance_comp", "insurance_company"])
-    ins_policy = get_val(["policy_no", "insurance_policy"])
-    ins_expiry = get_val(["insUpto", "insurance_expiry"])
+    ins_company = get_val(["insurance_comp", "insurance_company", "rc_insurance_comp"])
+    ins_policy = get_val(["policy_no", "insurance_policy", "rc_insurance_policy_no"])
+    ins_expiry = get_val(["insUpto", "insurance_expiry", "rc_insurance_upto"])
     
     ins_status = "✅ ACTIVE"
     if ins_expiry != "N/A":
         try:
-            exp_dt = datetime.strptime(ins_expiry, "%d/%m/%Y")
+            exp_clean = ins_expiry.split("T")[0]
+            if "/" in exp_clean:
+                exp_dt = datetime.strptime(exp_clean, "%d/%m/%Y")
+            else:
+                exp_dt = datetime.strptime(exp_clean, "%Y-%m-%d")
             if datetime.now() > exp_dt:
                 ins_status = "⚠️ EXPIRED"
         except Exception:
             pass
             
-    road_tax = get_val(["tax_valid_upto"], "LTT")
-    fitness = "✅ ACTIVE" if get_val(["fitness_upto"]) != "N/A" else "✅ ACTIVE"
-    pucc = "✅ Active" if get_val(["puc_upto"]) != "N/A" else "✅ Active"
-    legal_status = "✅ ACTIVE"
+    road_tax = get_val(["tax_valid_upto", "road_tax"], "LTT")
+    fitness_val = get_val(["fitness_upto", "fitness_status"])
+    fitness = f"✅ {fitness_val}" if fitness_val != "N/A" else "✅ ACTIVE"
+    
+    puc_val = get_val(["puc_upto", "pucc_status"])
+    pucc = f"✅ {puc_val}" if puc_val != "N/A" else "✅ Active"
+    legal_status = get_val(["status", "blacklist_status"], "✅ ACTIVE")
 
     report = f"""📑 𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
@@ -153,7 +155,7 @@ def build_vehicle_report(raw_json):
 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄
 ┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 ┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
-┠ 𝐄𝐱𝐩𝐢𝐫y   : {ins_expiry} {ins_status}
+┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_expiry} {ins_status}
 ┠ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 ┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 ┖ 𝐏𝐔𝐂𝐂     : {pucc}
@@ -172,17 +174,26 @@ async def send_welcome(message):
     u = get_user(user_id)
     
     markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
-        InlineKeyboardButton("💬 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
-    )
+    
+    # 👑 King Emoji & Special Status for Admin
+    if user_id == ADMIN_ID:
+        status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
+        markup.add(
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+        )
+    else:
+        status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
+        markup.add(
+            InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+        )
     
     welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
 
 🚗 *Instant Vehicle RC & Owner Verification Service.*
 
-🎁 **SPECIAL OFFER FOR NEW USERS:**
-🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟
+🎁 **ACCOUNT STATUS:**
+{status_txt}
 *(Directly send any Vehicle Number below to test)*
 
 ─────────────
@@ -199,7 +210,7 @@ async def send_plan(message):
 async def show_buy_options(chat_id):
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("📩 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
     )
     
     plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
@@ -247,8 +258,8 @@ async def add_subscription(message):
         u = get_user(target_id)
         u["expiry"] = exp
         
-        await bot.reply_to(message, f"✅ User `{target_id}` active till: {exp.strftime('%Y-%m-%d %H:%M:%S')}")
-        await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan has been activated!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
+        await bot.reply_to(message, f"👑 **[ADMIN]** User `{target_id}` active till: {exp.strftime('%Y-%m-%d %H:%M:%S')}")
+        await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan has been activated by Admin 👑!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
     except Exception as e:
         await bot.reply_to(message, f"❌ Usage: `/add <user_id> <24h/7d>`\nError: {e}")
 
@@ -260,7 +271,7 @@ async def handle_vehicle_search(message):
     text = message.text.strip().upper().replace(" ", "").replace("-", "")
     
     if len(text) < 6 or len(text) > 12:
-        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ01HZ8969`", parse_mode="Markdown")
+        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05CX7222`", parse_mode="Markdown")
         return
 
     subscribed = is_subscribed(user_id)
@@ -268,7 +279,7 @@ async def handle_vehicle_search(message):
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton("💳 BUY VIP PLAN (₹25)", callback_data="buy_plan"),
-            InlineKeyboardButton("💬 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
         msg_text = f"""⚠️ **FREE TRIAL EXHAUSTED!**
 
@@ -311,10 +322,8 @@ def start_bot_thread():
     loop.run_until_complete(bot.polling(non_stop=True, timeout=60))
 
 if __name__ == "__main__":
-    # Start Telegram Bot in background thread
     t = threading.Thread(target=start_bot_thread, daemon=True)
     t.start()
     
-    # Start FastAPI Web Server on Main Thread
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
