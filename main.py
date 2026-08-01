@@ -21,8 +21,7 @@ bot = AsyncTeleBot(BOT_TOKEN)
 app = FastAPI()
 
 # ==================== IN-MEMORY DATABASE ====================
-# Storage structure for free searches and active subscriptions
-user_data = {}  # {user_id: {"free_searches": 2, "expiry": timestamp_or_None}}
+user_data = {}  # {user_id: {"free_searches": 2, "expiry": None}}
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -87,7 +86,6 @@ def build_vehicle_report(data):
     ins_expiry_raw = data.get("insurance_expiry", data.get("rc_insurance_upto"))
     ins_expiry = format_date(ins_expiry_raw)
     
-    # Insurance status logic
     ins_status = "✅ ACTIVE"
     if ins_expiry_raw:
         try:
@@ -131,7 +129,7 @@ def build_vehicle_report(data):
 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄
 ┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 ┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
-┠ 𝐄𝐱pixy   : {ins_expiry} {ins_status}
+┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_expiry} {ins_status}
 ┠ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 ┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 ┖ 𝐏𝐔𝐂𝐂     : {pucc}
@@ -209,7 +207,6 @@ async def add_subscription(message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        # Command Format: /add <user_id> <hours/days> (e.g. /add 123456 24h or /add 123456 7d)
         args = message.text.split()
         target_id = int(args[1])
         duration_str = args[2].lower()
@@ -238,12 +235,10 @@ async def handle_vehicle_search(message):
     u = get_user(user_id)
     text = message.text.strip().upper().replace(" ", "").replace("-", "")
     
-    # Validate vehicle number format roughly
     if len(text) < 6 or len(text) > 12:
         await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05CX7222`", parse_mode="Markdown")
         return
 
-    # Check Access (Free Searches or Active Subscription)
     subscribed = is_subscribed(user_id)
     if not subscribed and u["free_searches"] <= 0:
         markup = InlineKeyboardMarkup()
@@ -262,7 +257,6 @@ You have used all your free searches. Please buy a plan to continue accessing ve
     status_msg = await bot.reply_to(message, "🔍 **Searching Official Vahan Database... Please wait...**", parse_mode="Markdown")
     
     try:
-        # API Request
         url = f"{API_BASE_URL}{text}"
         res = requests.get(url, timeout=25)
         
@@ -270,12 +264,10 @@ You have used all your free searches. Please buy a plan to continue accessing ve
             json_res = res.json()
             data = json_res.get("data", json_res)
             
-            # Format and Send Report
             report = build_vehicle_report(data)
             await bot.delete_message(message.chat.id, status_msg.message_id)
             await bot.send_message(message.chat.id, report)
             
-            # Deduct Free Search if not subscribed
             if not subscribed:
                 u["free_searches"] -= 1
                 if u["free_searches"] > 0:
@@ -288,16 +280,17 @@ You have used all your free searches. Please buy a plan to continue accessing ve
     except Exception as e:
         await bot.edit_message_text(f"⚠️ **Server Error / Timeout!**\nPlease try again in a few seconds.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
 
-# ==================== RUNNER ====================
-async def run_bot():
-    print("Bot is starting polling...")
-    await bot.polling(non_stop=True, timeout=60)
+# ==================== FIXED RUNNER ====================
+def start_bot_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(bot.polling(non_stop=True, timeout=60))
 
 if __name__ == "__main__":
-    # Run Telegram Bot in a separate asyncio loop / thread alongside FastAPI Uvicorn
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_bot())
+    # Start Telegram Bot in a background thread
+    t = threading.Thread(target=start_bot_thread, daemon=True)
+    t.start()
     
-    # Start Uvicorn Server
+    # Start FastAPI Web Server on Main Thread
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
