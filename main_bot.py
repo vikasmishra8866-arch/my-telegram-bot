@@ -20,8 +20,8 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 BOT_TOKEN = "8426663183:AAEkVlkL4qIZz6srseuHiSi2QyoXUEt-0mk"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Your_Telegram_Username"   # Apna Telegram Username yahan daalein
-YOUR_UPI_ID = "yourupi@paytm"                # Apni UPI ID yahan daalein
+ADMIN_USERNAME = "@Mrx477"   # Apna Telegram Username yahan daalein
+YOUR_UPI_ID = "9696159863.wallet@phonepe"                # Apni UPI ID yahan daalein
 YOUR_NAME = "Parivahan Elite Service"
 
 # External RTO Source API Config
