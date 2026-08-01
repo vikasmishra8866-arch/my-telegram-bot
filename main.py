@@ -47,60 +47,82 @@ def home():
 def ping():
     return {"status": "success"}
 
-# ==================== HELPER FUNCTIONS ====================
-def format_date(date_str):
-    if not date_str or date_str in ["N/A", "NA", "None"]:
-        return "N/A"
-    try:
-        dt = datetime.strptime(str(date_str).split("T")[0], "%Y-%m-%d")
-        return dt.strftime("%d-%b-%Y")
-    except Exception:
-        return str(date_str)
+# ==================== REPORT BUILDER ====================
+def build_vehicle_report(raw_json):
+    # Extract nested data dictionary based on your API structure
+    data = {}
+    if isinstance(raw_json, dict):
+        if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
+            inner_data = raw_json["rc_details"].get("data", [])
+            if isinstance(inner_data, list) and len(inner_data) > 0:
+                data = inner_data[0]
+            elif isinstance(inner_data, dict):
+                data = inner_data
+        elif "data" in raw_json:
+            if isinstance(raw_json["data"], list) and len(raw_json["data"]) > 0:
+                data = raw_json["data"][0]
+            elif isinstance(raw_json["data"], dict):
+                data = raw_json["data"]
+        else:
+            data = raw_json
 
-def clean_val(val):
-    if val is None or str(val).strip() in ["", "None", "null", "N/A", "NA"]:
-        return "N/A"
-    return str(val).strip()
+    # Safe Key Extractor
+    def get_val(keys, default="N/A"):
+        for k in keys:
+            if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
+                return str(data[k]).strip()
+        return default
 
-def build_vehicle_report(data):
-    reg_no = clean_val(data.get("registration_number", data.get("rc_number")))
-    reg_date = format_date(data.get("registration_date", data.get("rc_regn_dt")))
-    author = clean_val(data.get("rto_name", data.get("registered_at")))
-    rto_code = clean_val(data.get("rto_code"))
-    state = clean_val(data.get("state", data.get("state_name")))
+    # 1. Registration Details
+    reg_no = get_val(["reg_no", "registration_number", "rc_number"])
+    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt"])
+    author = get_val(["rto", "rto_name", "registered_at"])
+    rto_code = get_val(["rto_code", "rc_rto_code"])
+    state = get_val(["state", "state_name"])
     
-    owner = clean_val(data.get("owner_name", data.get("rc_owner_name")))
-    serial = clean_val(data.get("owner_serial", data.get("owner_number", "1st OWNER")))
-    address = clean_val(data.get("present_address", data.get("permanent_address")))
+    # 2. Ownership Analytics
+    owner_1 = get_val(["owner_1_name"])
+    owner_2 = get_val(["owner_2_name"])
+    if owner_1 != "N/A" and owner_2 != "N/A":
+        owner = f"{owner_1} | 2nd Owner: {owner_2}"
+    elif owner_1 != "N/A":
+        owner = owner_1
+    else:
+        owner = get_val(["owner_name", "rc_owner_name"])
+        
+    sr_no = get_val(["owner_sr_no"], "1")
+    serial = f"{sr_no}st OWNER" if sr_no == "1" else f"{sr_no}nd OWNER"
+    address = get_val(["address_1", "address", "present_address"])
     
-    model = clean_val(data.get("model", data.get("rc_model")))
-    maker = clean_val(data.get("maker_name", data.get("rc_maker_desc")))
-    v_class = clean_val(data.get("vehicle_class", data.get("rc_vh_class_desc")))
-    body = clean_val(data.get("body_type", data.get("rc_body_type_desc")))
-    color = clean_val(data.get("color", data.get("rc_color")))
-    fuel = clean_val(data.get("fuel_type", data.get("rc_fuel_desc")))
-    mfg_date = clean_val(data.get("mfg_date", data.get("rc_manu_month_yr")))
-    chassis = clean_val(data.get("chassis_number", data.get("rc_chasi_no")))
-    engine = clean_val(data.get("engine_number", data.get("rc_eng_no")))
+    # 3. Technical Specifications
+    model = get_val(["vehicle_model", "maker_modal", "model"])
+    maker = get_val(["maker", "maker_name"])
+    v_class = get_val(["vh_class", "vehicle_class"])
+    body = get_val(["body_type"], "PASSENGER / CAR")
+    color = get_val(["vehicle_color", "color"])
+    fuel = get_val(["fuel_type", "fuel"])
+    mfg_date = get_val(["manufactured_month_year", "mfg_date"])
+    chassis = get_val(["chasi_no", "chassis_number"])
+    engine = get_val(["engine_no", "engine_number"])
     
-    ins_company = clean_val(data.get("insurance_company", data.get("rc_insurance_comp")))
-    ins_policy = clean_val(data.get("insurance_policy", data.get("rc_insurance_policy_no")))
-    ins_expiry_raw = data.get("insurance_expiry", data.get("rc_insurance_upto"))
-    ins_expiry = format_date(ins_expiry_raw)
+    # 4. Insurance & Compliance
+    ins_company = get_val(["insurance_comp", "insurance_company"])
+    ins_policy = get_val(["policy_no", "insurance_policy"])
+    ins_expiry = get_val(["insUpto", "insurance_expiry"])
     
     ins_status = "✅ ACTIVE"
-    if ins_expiry_raw and ins_expiry_raw != "N/A":
+    if ins_expiry != "N/A":
         try:
-            exp_dt = datetime.strptime(str(ins_expiry_raw).split("T")[0], "%Y-%m-%d")
+            exp_dt = datetime.strptime(ins_expiry, "%d/%m/%Y")
             if datetime.now() > exp_dt:
                 ins_status = "⚠️ EXPIRED"
         except Exception:
             pass
             
-    road_tax = clean_val(data.get("road_tax", "LTT"))
-    fitness = clean_val(data.get("fitness_status", "✅ ACTIVE"))
-    pucc = clean_val(data.get("pucc_status", "✅ Active"))
-    legal_status = clean_val(data.get("status", "✅ ACTIVE"))
+    road_tax = get_val(["tax_valid_upto"], "LTT")
+    fitness = "✅ ACTIVE" if get_val(["fitness_upto"]) != "N/A" else "✅ ACTIVE"
+    pucc = "✅ Active" if get_val(["puc_upto"]) != "N/A" else "✅ Active"
+    legal_status = "✅ ACTIVE"
 
     report = f"""📑 𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
@@ -131,8 +153,8 @@ def build_vehicle_report(data):
 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄
 ┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 ┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
-┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_expiry} {ins_status}
-┠ 𝐑𝐨𝐚𝐝 𝐓𝐚x : {road_tax}
+┠ 𝐄𝐱𝐩𝐢𝐫y   : {ins_expiry} {ins_status}
+┠ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 ┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 ┖ 𝐏𝐔𝐂𝐂     : {pucc}
 
@@ -166,7 +188,7 @@ async def send_welcome(message):
 ─────────────
 📌 **How to use?**
 Just type and send any Vehicle Number.
-Example: `GJ05CX7222` or `DL01AB1234`
+Example: `GJ05CX7222` or `GJ01HZ8969`
 ─────────────"""
     await bot.send_message(message.chat.id, welcome_txt, parse_mode="Markdown", reply_markup=markup)
 
@@ -209,7 +231,6 @@ async def add_subscription(message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        # Command syntax: /add USER_ID 24h OR /add USER_ID 7d
         args = message.text.split()
         target_id = int(args[1])
         duration_str = args[2].lower()
@@ -239,7 +260,7 @@ async def handle_vehicle_search(message):
     text = message.text.strip().upper().replace(" ", "").replace("-", "")
     
     if len(text) < 6 or len(text) > 12:
-        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05CX7222`", parse_mode="Markdown")
+        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ01HZ8969`", parse_mode="Markdown")
         return
 
     subscribed = is_subscribed(user_id)
@@ -265,13 +286,12 @@ You have used all your free searches. Please buy a plan to continue accessing ve
         
         if res.status_code == 200:
             json_res = res.json()
-            data = json_res.get("data", json_res)
+            report = build_vehicle_report(json_res)
             
-            report = build_vehicle_report(data)
             await bot.delete_message(message.chat.id, status_msg.message_id)
             await bot.send_message(message.chat.id, report)
             
-            # Deduct free searches only for regular non-subscribed users
+            # Deduct free search only for regular non-subscribed users
             if not subscribed:
                 u["free_searches"] -= 1
                 if u["free_searches"] > 0:
