@@ -1,6 +1,5 @@
 import asyncio
 import io
-import json
 import logging
 import os
 import re
@@ -21,8 +20,8 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Your_Telegram_Username"   # Apna telegram username daalein
-YOUR_UPI_ID = "yourupi@paytm"                # Apni UPI ID daalein
+ADMIN_USERNAME = "@Your_Telegram_Username"   # Apna Telegram Username yahan daalein
+YOUR_UPI_ID = "yourupi@paytm"                # Apni UPI ID yahan daalein
 YOUR_NAME = "Parivahan Elite Service"
 
 # External RTO Source API Config
@@ -38,13 +37,13 @@ user_state = {}            # {user_id: "AWAITING_VEHICLE" or "AWAITING_IFSC"}
 logging.basicConfig(level=logging.INFO)
 
 # =====================================================================
-# 🚀 PART 1: FASTAPI BACKEND GATEWAY
+# 🚀 PART 1: FASTAPI BACKEND GATEWAY (FOR RENDER HEALTH CHECK)
 # =====================================================================
 app = fastapi.FastAPI(title="Parivahan Unified Gateway")
 
 @app.get("/")
 def home():
-    return {"status": "Online", "service": "Parivahan Elite Unified Server"}
+    return {"status": "Online", "service": "Parivahan & Bank Intelligence Server"}
 
 @app.get("/api/v1/vehicle/{vehicle_no}")
 async def get_vehicle_details(vehicle_no: str):
@@ -76,6 +75,8 @@ def run_fastapi():
 # =====================================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ---------------- DATABASE CONTROLLER ----------------
 
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
@@ -123,10 +124,12 @@ def is_plan_active(expiry_str: str) -> bool:
     if not expiry_str:
         return False
     try:
-        expiry_date = datetime.fromisoformat(expiry_str)
+        expiry_date = datetime.fromisoformat(str(expiry_str))
         return expiry_date > datetime.now()
     except Exception:
         return False
+
+# ---------------- QR CODE GENERATOR ----------------
 
 def generate_upi_qr(upi_id: str, name: str, amount: int, note: str) -> bytes:
     upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn={note}"
@@ -138,7 +141,8 @@ def generate_upi_qr(upi_id: str, name: str, amount: int, note: str) -> bytes:
     img.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-# ---------------- COMMANDS & BUTTON HANDLERS ----------------
+
+# ---------------- TELEGRAM UI & COMMANDS ----------------
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -147,11 +151,10 @@ async def cmd_start(message: types.Message):
     credits, plan_expiry = await get_or_create_user(user_id, username)
     active = is_plan_active(plan_expiry)
     
-    # Reset state on start
     user_state.pop(user_id, None)
 
     status_text = (
-        "✨ <b>VEHICLE &amp; BANK INTELLIGENCE BOT</b> ✨\n"
+        "✨ <b>VEHICLE & BANK INTELLIGENCE BOT</b> ✨\n"
         "━━━━━━━ Dashboard ━━━━━━━\n\n"
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"⚡ <b>Free Credits:</b> <code>{credits} Searches</code>\n"
@@ -162,7 +165,6 @@ async def cmd_start(message: types.Message):
 
     status_text += "📌 <b>Neeche diye gaye options me se select karein:</b>"
 
-    # Side-by-side Button Grid Layout
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🔍 Get Vehicle Details", callback_data="prompt_vehicle_input"),
@@ -305,7 +307,7 @@ async def fetch_ifsc_details(message: types.Message, ifsc_code: str):
 ┠ <b>Branch</b>    : {branch}
 ┖ <b>MICR Code</b>  : {micr}
 
-📍 <b>𝐋𝐎𝐂𝐀𝐓𝐈𝐎𝐍 &amp; 𝐀𝐃𝐃𝐑𝐄𝐒𝐒</b>
+📍 <b>𝐋𝐎𝐂𝐀𝐓𝐈𝐎𝐍 & ADDRESS</b>
 ┠ <b>Address</b>   : {address}
 ┠ <b>City</b>      : {city}
 ┠ <b>District</b>  : {district}
@@ -404,7 +406,7 @@ async def fetch_vehicle_details(message: types.Message, vehicle_no: str):
         await wait_msg.edit_text(f"❌ Error: {str(e)}", parse_mode="HTML")
 
 async def auto_delete_report(msg: types.Message, delay_seconds: int):
-    asyncio.sleep(delay_seconds)
+    await asyncio.sleep(delay_seconds)
     try:
         await msg.delete()
     except Exception:
@@ -424,13 +426,13 @@ async def master_message_router(message: types.Message):
 
     # State-based direct handling or Auto-detection fallback
     if current_state == "AWAITING_IFSC":
-        user_state.pop(user_id, None) # Clear state
+        user_state.pop(user_id, None)
         await fetch_ifsc_details(message, text)
     elif current_state == "AWAITING_VEHICLE":
-        user_state.pop(user_id, None) # Clear state
+        user_state.pop(user_id, None)
         await fetch_vehicle_details(message, text.replace(" ", "").upper())
     else:
-        # Smart Auto-Detection if user types directly without clicking buttons
+        # Smart Auto-Detection fallback if user inputs directly without clicking buttons
         clean_text = text.replace(" ", "").upper()
         ifsc_pattern = r'^[A-Z]{4}0[A-Z0-9]{6}$'
         
@@ -443,8 +445,18 @@ async def master_message_router(message: types.Message):
 # =====================================================================
 # 🌐 MAIN ENTRY POINT
 # =====================================================================
+async def start_bot_polling():
+    await init_db()
+    logging.info("🤖 Telegram Bot Started Polling...")
+    await dp.start_polling(bot)
+
+def run_bot_thread():
+    asyncio.run(start_bot_polling())
+
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=lambda: asyncio.run(dp.start_polling(bot)), daemon=True)
+    # Start Telegram Bot in a separate daemon thread
+    bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
     bot_thread.start()
 
+    # Start FastAPI Web Server on main thread for Render Port Check
     run_fastapi()
