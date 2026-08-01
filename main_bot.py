@@ -18,7 +18,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 # ⚙️ CONFIGURATION & CREDENTIALS
 # =====================================================================
-BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc"
+BOT_TOKEN = "8426663183:AAEkVlkL4qIZz6srseuHiSi2QyoXUEt-0mk"
 ADMIN_ID = 8204069256
 ADMIN_USERNAME = "@Your_Telegram_Username"   # Apna Telegram Username yahan daalein
 YOUR_UPI_ID = "yourupi@paytm"                # Apni UPI ID yahan daalein
