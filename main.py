@@ -21,7 +21,8 @@ bot = AsyncTeleBot(BOT_TOKEN)
 app = FastAPI()
 
 # ==================== IN-MEMORY DATABASE ====================
-user_data = {}  # {user_id: {"free_searches": 2, "expiry": None}}
+# Storage structure: {user_id: {"free_searches": 2, "expiry": datetime_or_None}}
+user_data = {}
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -29,6 +30,7 @@ def get_user(user_id):
     return user_data[user_id]
 
 def is_subscribed(user_id):
+    # Admin is ALWAYS allowed unlimited searches
     if user_id == ADMIN_ID:
         return True
     u = get_user(user_id)
@@ -87,7 +89,7 @@ def build_vehicle_report(data):
     ins_expiry = format_date(ins_expiry_raw)
     
     ins_status = "✅ ACTIVE"
-    if ins_expiry_raw:
+    if ins_expiry_raw and ins_expiry_raw != "N/A":
         try:
             exp_dt = datetime.strptime(str(ins_expiry_raw).split("T")[0], "%Y-%m-%d")
             if datetime.now() > exp_dt:
@@ -130,7 +132,7 @@ def build_vehicle_report(data):
 ┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 ┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
 ┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_expiry} {ins_status}
-┠ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
+┠ 𝐑𝐨𝐚𝐝 𝐓𝐚x : {road_tax}
 ┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 ┖ 𝐏𝐔𝐂𝐂     : {pucc}
 
@@ -207,6 +209,7 @@ async def add_subscription(message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
+        # Command syntax: /add USER_ID 24h OR /add USER_ID 7d
         args = message.text.split()
         target_id = int(args[1])
         duration_str = args[2].lower()
@@ -268,6 +271,7 @@ You have used all your free searches. Please buy a plan to continue accessing ve
             await bot.delete_message(message.chat.id, status_msg.message_id)
             await bot.send_message(message.chat.id, report)
             
+            # Deduct free searches only for regular non-subscribed users
             if not subscribed:
                 u["free_searches"] -= 1
                 if u["free_searches"] > 0:
@@ -280,14 +284,14 @@ You have used all your free searches. Please buy a plan to continue accessing ve
     except Exception as e:
         await bot.edit_message_text(f"⚠️ **Server Error / Timeout!**\nPlease try again in a few seconds.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
 
-# ==================== FIXED RUNNER ====================
+# ==================== THREADED RUNNER ====================
 def start_bot_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(bot.polling(non_stop=True, timeout=60))
 
 if __name__ == "__main__":
-    # Start Telegram Bot in a background thread
+    # Start Telegram Bot in background thread
     t = threading.Thread(target=start_bot_thread, daemon=True)
     t.start()
     
