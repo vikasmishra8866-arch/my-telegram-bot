@@ -3,4 +3,5 @@ aiosqlite
 httpx
 qrcode
 pillow
-streamlit
+fastapi
+uvicorn
