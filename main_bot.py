@@ -1,13 +1,17 @@
 import asyncio
 import io
+import json
 import logging
+import os
+import re
 import threading
 from datetime import datetime, timedelta
 
 import aiosqlite
+import fastapi
 import httpx
 import qrcode
-import streamlit as st
+import uvicorn
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,17 +21,62 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 # =====================================================================
 BOT_TOKEN = "8426663183:AAHX3sr8RlirbVBeR1zvMafhqMXWl6tymvc"
 ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Your_Telegram_Username"   # 👈 Replace with your personal Telegram handle (e.g. @Vikas_Support)
-YOUR_UPI_ID = "yourupi@paytm"                # 👈 Replace with your GPay/PhonePe/Paytm UPI ID
+ADMIN_USERNAME = "@Your_Telegram_Username"   # Apna telegram username daalein
+YOUR_UPI_ID = "yourupi@paytm"                # Apni UPI ID daalein
 YOUR_NAME = "Parivahan Elite Service"
-FASTAPI_GATEWAY = "http://127.0.0.1:10000/api/v1/vehicle/" # Your RTO API Endpoint
+
+# External RTO Source API Config
+REMOTE_RTO_URL = "http://103.241.139.112:8000/rc"
+API_AUTH_TOKEN = "Bearer token-gemini-parivahan-998877665544332211"
+
 DB_FILE = "bot_database.db"
 
+# Memory State Trackers
+user_active_qrs = {}       # {user_id: message_id}
+user_state = {}            # {user_id: "AWAITING_VEHICLE" or "AWAITING_IFSC"}
+
 logging.basicConfig(level=logging.INFO)
+
+# =====================================================================
+# 🚀 PART 1: FASTAPI BACKEND GATEWAY
+# =====================================================================
+app = fastapi.FastAPI(title="Parivahan Unified Gateway")
+
+@app.get("/")
+def home():
+    return {"status": "Online", "service": "Parivahan Elite Unified Server"}
+
+@app.get("/api/v1/vehicle/{vehicle_no}")
+async def get_vehicle_details(vehicle_no: str):
+    clean_v_num = vehicle_no.replace(" ", "").upper()
+    headers = {
+        "Authorization": API_AUTH_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {"rc_number": clean_v_num}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(REMOTE_RTO_URL, json=payload, headers=headers, timeout=15.0)
+            if response.status_code == 200:
+                data = response.json()
+                return {"success": True, "rc_details": data}
+            else:
+                raise fastapi.HTTPException(status_code=response.status_code, detail="Vehicle record not found")
+        except Exception as e:
+            raise fastapi.HTTPException(status_code=500, detail=str(e))
+
+def run_fastapi():
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+# =====================================================================
+# 🤖 PART 2: TELEGRAM BOT LOGIC
+# =====================================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ---------------- DATABASE LOGIC ----------------
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
@@ -79,7 +128,6 @@ def is_plan_active(expiry_str: str) -> bool:
     except Exception:
         return False
 
-# ---------------- DYNAMIC QR GENERATOR ----------------
 def generate_upi_qr(upi_id: str, name: str, amount: int, note: str) -> bytes:
     upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn={note}"
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
@@ -90,49 +138,78 @@ def generate_upi_qr(upi_id: str, name: str, amount: int, note: str) -> bytes:
     img.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-# ---------------- TELEGRAM BOT HANDLERS ----------------
+# ---------------- COMMANDS & BUTTON HANDLERS ----------------
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "User"
     credits, plan_expiry = await get_or_create_user(user_id, username)
     active = is_plan_active(plan_expiry)
+    
+    # Reset state on start
+    user_state.pop(user_id, None)
 
     status_text = (
-        "✨ <b>VEHICLE ELITE INTELLIGENCE BOT</b> ✨\n"
+        "✨ <b>VEHICLE &amp; BANK INTELLIGENCE BOT</b> ✨\n"
         "━━━━━━━ Dashboard ━━━━━━━\n\n"
-        "👤 <b>ACCOUNT DASHBOARD</b>\n"
-        f"┣ 🆔 <b>User ID:</b> <code>{user_id}</code>\n"
-        f"┣ ⚡ <b>Free Credits:</b> <code>{credits} Searches</code>\n"
+        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"⚡ <b>Free Credits:</b> <code>{credits} Searches</code>\n"
         f"┗ 💎 <b>Unlimited Pass:</b> <code>{'ACTIVE ✅' if active else 'INACTIVE ❌'}</code>\n\n"
     )
     if active:
-        status_text += f"⏰ <b>Pass Expiry:</b> <code>{plan_expiry}</code>\n\n"
+        status_text += f"⏰ <b>Expiry:</b> <code>{plan_expiry}</code>\n\n"
 
-    status_text += (
-        "🔍 <b>How to Search:</b>\n"
-        "Bas gadi ka registration number type karke bhejein!\n"
-        "<i>Example: GJ05CX7222</i>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
+    status_text += "📌 <b>Neeche diye gaye options me se select karein:</b>"
 
+    # Side-by-side Button Grid Layout
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Upgrade to Unlimited Pass", callback_data="buy_plan")]
+        [
+            InlineKeyboardButton(text="🔍 Get Vehicle Details", callback_data="prompt_vehicle_input"),
+            InlineKeyboardButton(text="🏦 Fetch IFSC Code", callback_data="prompt_ifsc_input")
+        ],
+        [
+            InlineKeyboardButton(text="💎 Upgrade to Unlimited Pass", callback_data="buy_plan")
+        ]
     ])
     await message.answer(status_text, parse_mode="HTML", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "prompt_vehicle_input")
+async def ask_vehicle_number(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_state[user_id] = "AWAITING_VEHICLE"
+    
+    prompt_text = (
+        "🚗 <b>ENTER VEHICLE REGISTRATION NUMBER</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Kripya gadi ka registration number type karke send karein.\n\n"
+        "📌 <b>Example:</b> <code>GJ05CX7222</code> ya <code>MH12AB1234</code>"
+    )
+    await callback.answer()
+    await callback.message.answer(prompt_text, parse_mode="HTML")
+
+@dp.callback_query(F.data == "prompt_ifsc_input")
+async def ask_ifsc_code(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_state[user_id] = "AWAITING_IFSC"
+    
+    prompt_text = (
+        "🏦 <b>ENTER BANK IFSC CODE</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Kripya 11-digit ka bank IFSC code type karke send karein.\n\n"
+        "📌 <b>Example:</b> <code>SBIN0000300</code> ya <code>HDFC0000060</code>"
+    )
+    await callback.answer()
+    await callback.message.answer(prompt_text, parse_mode="HTML")
 
 @dp.callback_query(F.data == "buy_plan")
 async def show_plans(callback: types.CallbackQuery):
     text = (
-        "💳 <b>SELECT YOUR UNLIMITED VIP PASS</b>\n"
-        "━━━━━━━ VIP Pricing ━━━━━━━\n\n"
-        "⚡ <b>1-DAY UNLIMITED PASS</b>\n"
-        "┣ Price: <b>₹30</b>\n"
-        "┗ Validity: <b>24 Hours Access</b>\n\n"
-        "💎 <b>7-DAY UNLIMITED PASS</b>\n"
-        "┣ Price: <b>₹90</b> (Save 60%)\n"
-        "┗ Validity: <b>7 Days Access</b>\n\n"
-        "👇 Click below to generate Dynamic Payment QR:"
+        "💳 <b>SELECT UNLIMITED VIP PASS</b>\n"
+        "━━━━━━━ Pricing ━━━━━━━\n\n"
+        "⚡ <b>1-DAY PASS:</b> ₹30\n"
+        "💎 <b>7-DAY PASS:</b> ₹90\n\n"
+        "👇 Plan select karein:"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Buy 1-Day Pass (₹30)", callback_data="pay_30")],
@@ -143,80 +220,116 @@ async def show_plans(callback: types.CallbackQuery):
 @dp.callback_query(F.data.in_({"pay_30", "pay_90"}))
 async def process_qr_payment(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    amount = 30 if callback.data == "pay_30" else 90
-    plan_name = "1-Day Unlimited Pass" if amount == 30 else "7-Day Unlimited Pass"
-    txn_note = f"RC_{user_id}"
+    
+    if user_id in user_active_qrs:
+        try:
+            await bot.delete_message(chat_id=callback.message.chat.id, message_id=user_active_qrs[user_id])
+        except Exception:
+            pass
 
-    qr_bytes = generate_upi_qr(YOUR_UPI_ID, YOUR_NAME, amount, txn_note)
+    amount = 30 if callback.data == "pay_30" else 90
+    plan_name = "1-Day Pass" if amount == 30 else "7-Day Pass"
+    
+    qr_bytes = generate_upi_qr(YOUR_UPI_ID, YOUR_NAME, amount, f"RC_{user_id}")
     input_file = BufferedInputFile(qr_bytes, filename=f"qr_{user_id}.png")
 
     caption_text = (
-        "⏳ <b>INSTANT UPI PAYMENT QR</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 <b>Plan Selected:</b> <code>{plan_name}</code>\n"
-        f"💵 <b>Payable Amount:</b> <code>₹{amount}</code>\n"
-        f"🆔 <b>Your User ID:</b> <code>{user_id}</code>\n"
-        "⏱ <b>QR Validity:</b> <code>4 Minutes</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📌 <b>HOW TO ACTIVATE INSTANTLY:</b>\n"
-        "1️⃣ QR Code scan karke payment complete karein.\n"
-        "2️⃣ Payment successful ka <b>Screenshot</b> lein.\n"
-        f"3️⃣ Screenshot aur apni User ID (<code>{user_id}</code>) hamare Support Admin ko bhejein:\n\n"
-        f"👉 <b>Support Admin:</b> {ADMIN_USERNAME}\n\n"
-        "⚡ <i>Verification ke 1 minute me aapka pass activate ho jayega!</i>"
+        "⏳ <b>UPI PAYMENT QR CODE</b>\n"
+        f"📦 Plan: <b>{plan_name}</b> | Amount: <b>₹{amount}</b>\n\n"
+        "1️⃣ Scan karke payment karein.\n"
+        "2️⃣ Screenshot aur User ID niche admin ko bhejein:\n"
+        f"👉 <b>Admin:</b> {ADMIN_USERNAME}"
     )
 
     await callback.answer()
-    qr_msg = await callback.message.answer_photo(
-        photo=input_file,
-        caption=caption_text,
-        parse_mode="HTML"
-    )
-    asyncio.create_task(auto_expire_qr(qr_msg, 240))
+    qr_msg = await callback.message.answer_photo(photo=input_file, caption=caption_text, parse_mode="HTML")
+    user_active_qrs[user_id] = qr_msg.message_id
+    asyncio.create_task(auto_expire_qr(qr_msg, user_id, 240))
 
-async def auto_expire_qr(msg: types.Message, delay_seconds: int):
+async def auto_expire_qr(msg: types.Message, user_id: int, delay_seconds: int):
     await asyncio.sleep(delay_seconds)
     try:
-        await msg.delete()
-        await msg.answer("⌛ <b>QR Code Expired!</b> Time out ho gaya hai. Dobara /start karke naya QR generate karein.", parse_mode="HTML")
+        if user_active_qrs.get(user_id) == msg.message_id:
+            del user_active_qrs[user_id]
+            await msg.delete()
     except Exception:
         pass
 
-# ---------------- ADMIN ACTIVATION COMMAND ----------------
 @dp.message(Command("activate"))
 async def admin_activate(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    
     try:
         args = message.text.split()
         target_user = int(args[1])
         days = int(args[2])
-        
-        plan_type = "DAILY" if days == 1 else "WEEKLY"
-        await activate_plan(target_user, plan_type, days)
-        await message.answer(f"✅ User <code>{target_user}</code> ka <b>{days}-Day Unlimited Plan</b> activate ho gaya hai.", parse_mode="HTML")
-        
-        await bot.send_message(
-            target_user,
-            f"🎉 <b>VIP PASS ACTIVATED!</b>\n\n"
-            f"Aapka <b>{days}-Day Unlimited Search Pass</b> successfully active ho chuka hai! "
-            f"Ab aap kitni bhi gadiyon ke details search kar sakte hain.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await message.answer("❌ Usage: <code>/activate &lt;USER_ID&gt; &lt;DAYS&gt;</code>\nExample: <code>/activate 8204069256 1</code>", parse_mode="HTML")
+        await activate_plan(target_user, "VIP", days)
+        await message.answer(f"✅ User <code>{target_user}</code> ka plan active ho gaya hai.", parse_mode="HTML")
+        await bot.send_message(target_user, f"🎉 <b>VIP PASS ACTIVATED!</b> Aapka {days}-day pass chalu ho gaya hai.", parse_mode="HTML")
+    except Exception:
+        await message.answer("❌ Format: `/activate USER_ID DAYS`", parse_mode="HTML")
 
-# ---------------- ULTRA PREMIUM VEHICLE REPORT HANDLER ----------------
-@dp.message()
-async def search_vehicle(message: types.Message):
-    vehicle_no = message.text.replace(" ", "").upper()
+
+# ---------------- FETCHERS (VEHICLE & IFSC) ----------------
+
+async def fetch_ifsc_details(message: types.Message, ifsc_code: str):
+    clean_ifsc = ifsc_code.strip().upper()
+    wait_msg = await message.answer("🔍 <b>Searching Bank IFSC Details...</b>", parse_mode="HTML")
+    
+    url = f"https://ifsc.razorpay.com/{clean_ifsc}"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                
+                bank_name = data.get("BANK", "N/A")
+                branch = data.get("BRANCH", "N/A")
+                address = data.get("ADDRESS", "N/A")
+                city = data.get("CITY", "N/A")
+                district = data.get("DISTRICT", "N/A")
+                state = data.get("STATE", "N/A")
+                micr = data.get("MICR", "N/A")
+                
+                upi = "✅ Supported" if data.get("UPI") else "❌ Not Supported"
+                neft = "✅ Supported" if data.get("NEFT") else "❌ Not Supported"
+                imps = "✅ Supported" if data.get("IMPS") else "❌ Not Supported"
+                rtgs = "✅ Supported" if data.get("RTGS") else "❌ Not Supported"
+
+                report = f"""🏦 <b>𝐁𝐀𝐍𝐊 𝐈𝐅𝐒𝐂 𝐃𝐄𝐓𝐀𝐈𝐋𝐒</b>
+╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
+
+🏛 <b>𝐁𝐀𝐍𝐊 𝐈𝐍𝐅𝐎𝐑𝐌𝐀𝐓𝐈𝐎𝐍</b>
+┠ <b>Bank Name</b> : {bank_name}
+┠ <b>IFSC Code</b> : <code>{clean_ifsc}</code>
+┠ <b>Branch</b>    : {branch}
+┖ <b>MICR Code</b>  : {micr}
+
+📍 <b>𝐋𝐎𝐂𝐀𝐓𝐈𝐎𝐍 &amp; 𝐀𝐃𝐃𝐑𝐄𝐒𝐒</b>
+┠ <b>Address</b>   : {address}
+┠ <b>City</b>      : {city}
+┠ <b>District</b>  : {district}
+┖ <b>State</b>     : {state}
+
+⚡ <b>𝐒𝐄𝐑𝐕𝐈𝐂𝐄 𝐒𝐔𝐏𝐏𝐎𝐑𝐓</b>
+┠ <b>UPI</b>       : {upi}
+┠ <b>NEFT</b>      : {neft}
+┠ <b>IMPS</b>      : {imps}
+┖ <b>RTGS</b>      : {rtgs}
+
+╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
+✅ <b>VERIFIED BANK DATA</b>"""
+
+                await wait_msg.delete()
+                await message.answer(report, parse_mode="HTML")
+            else:
+                await wait_msg.edit_text("❌ <b>Invalid IFSC Code!</b> Kripya sahi 11-digit IFSC code daalein.", parse_mode="HTML")
+        except Exception as e:
+            await wait_msg.edit_text(f"❌ <b>IFSC Error:</b> <code>{str(e)}</code>", parse_mode="HTML")
+
+async def fetch_vehicle_details(message: types.Message, vehicle_no: str):
     user_id = message.from_user.id
     username = message.from_user.username or "User"
-
-    if vehicle_no.startswith("/"):
-        return
-
     credits, plan_expiry = await get_or_create_user(user_id, username)
     active = is_plan_active(plan_expiry)
 
@@ -224,125 +337,114 @@ async def search_vehicle(message: types.Message):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Buy Unlimited Pass", callback_data="buy_plan")]
         ])
-        await message.answer(
-            "❌ <b>FREE CREDIT LIMIT EXHAUSTED!</b>\n\n"
-            "Aapke 2 Free Searches khatam ho chuke hain. Unlimited searches ke liye VIP Pass unlock karein:",
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
+        await message.answer("❌ Free credits khatam ho chuke hain! Pass buy karein:", parse_mode="HTML", reply_markup=keyboard)
         return
 
-    wait_msg = await message.answer("🔍 <b>Generating Ultra-Audit Report...</b>\n<i>Connecting to RTO Servers...</i>", parse_mode="HTML")
+    wait_msg = await message.answer("🔍 <b>Fetching RTO Records...</b>", parse_mode="HTML")
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{FASTAPI_GATEWAY}{vehicle_no}", timeout=15.0)
+            port = os.environ.get("PORT", 10000)
+            local_api_url = f"http://127.0.0.1:{port}/api/v1/vehicle/{vehicle_no}"
+            resp = await client.get(local_api_url, timeout=20.0)
+
             if resp.status_code == 200:
                 json_data = resp.json()
-                rc_data = json_data.get("rc_details", {}).get("data", [])[0]
+                rc_container = json_data.get("rc_details", {})
+                rc_data = rc_container.get("data", [{}])[0] if isinstance(rc_container, dict) and "data" in rc_container else rc_container
 
                 v_num = rc_data.get('regn_no', vehicle_no)
                 reg_dt = rc_data.get('regn_dt', 'N/A')
                 rto_auth = f"{rc_data.get('rto', 'N/A')}, {rc_data.get('state', 'N/A')}"
-                rto_code = rc_data.get('rto_code', 'N/A')
-                state = rc_data.get('state', 'N/A')
-
                 owner = rc_data.get('owner_name', 'N/A')
                 owner_sr = rc_data.get('owner_sr', '1st OWNER')
-                mobile = rc_data.get('mobile', 'N/A')
                 address = rc_data.get('address', 'N/A')
-
                 model = rc_data.get('maker_modal', 'N/A')
                 maker = rc_data.get('maker', 'N/A')
                 v_class = rc_data.get('vclass_desc', 'N/A')
-                body = rc_data.get('body_type', 'N/A')
-                color = rc_data.get('color', 'N/A')
                 fuel = rc_data.get('fuel_type', 'N/A')
-                mfg_dt = rc_data.get('mfg_dt', 'N/A')
                 chassis = rc_data.get('chasi_no', 'N/A')
                 engine = rc_data.get('engine_no', 'N/A')
-
-                ins_comp = rc_data.get('ins_comp', 'N/A')
-                policy = rc_data.get('policy_no', 'N/A')
-                ins_upto = rc_data.get('insUpto', 'N/A')
-                road_tax = rc_data.get('tax_upto', 'LTT')
-                fitness = rc_data.get('fit_upto', 'N/A')
-                puc = rc_data.get('puc_upto', 'N/A')
                 status = rc_data.get('status', 'ACTIVE')
-
-                status_badge = "✅ ACTIVE" if status.upper() == "ACTIVE" else "🔴 INACTIVE"
-                fit_badge = f"✅ {fitness}" if fitness != "N/A" else "⚠️ EXPIRED"
-                puc_badge = f"✅ {puc}" if puc != "N/A" else "⚠️ EXPIRED"
 
                 ultra_report = f"""📑 <b>𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓</b>
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
+📋 <b>REGISTRATION:</b> <code>{v_num}</code>
+📅 <b>Date:</b> {reg_dt}
+🏛 <b>RTO:</b> {rto_auth}
 
-📋 <b>𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒</b>
-┠ <b>𝐍𝐮𝐦𝐛𝐞𝐫</b>   : <code>{v_num}</code>
-┠ <b>𝐃𝐚𝐭𝐞</b>     : {reg_dt}
-┠ <b>𝐀𝐮𝐭𝐡𝐨𝐫</b>   : {rto_auth}
-┠ <b>𝐑𝐓𝐎 𝐂𝐨𝐝𝐞</b> : {rto_code}
-┖ <b>𝐒𝐭𝐚𝐭𝐞</b>    : {state}
+👤 <b>OWNERSHIP:</b>
+• <b>Name:</b> <b>{owner}</b>
+• <b>Serial:</b> {owner_sr}
+• <b>Address:</b> {address}
 
-👤 <b>𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀𝐋𝐘𝐓𝐈𝐂𝐒</b>
-┠ <b>𝐍𝐚𝐦𝐞</b>     : <b>{owner}</b>
-┠ <b>𝐒𝐞𝐫𝐢𝐚𝐥</b>   : {owner_sr}
-┠ <b>𝐌𝐨𝐛𝐢𝐥𝐞</b>   : <code>{mobile}</code>
-┖ <b>𝐀𝐝𝐝𝐫𝐞𝐬𝐬</b>  : {address}
+🚘 <b>SPECIFICATIONS:</b>
+• <b>Model:</b> {model}
+• <b>Maker:</b> {maker}
+• <b>Class:</b> {v_class}
+• <b>Fuel:</b> {fuel}
+• <b>Chassis:</b> <code>{chassis}</code>
+• <b>Engine:</b> <code>{engine}</code>
 
-🚘 <b>𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒</b>
-┠ <b>𝐌𝐨𝐝𝐞𝐥</b>    : {model}
-┠ <b>𝐌𝐚𝐤𝐞𝐫</b>    : {maker}
-┠ <b>𝐂𝐥𝐚𝐬𝐬</b>    : {v_class}
-┠ <b>𝐁𝐨𝐝𝐲</b>     : {body}
-┠ <b>𝐂𝐨𝐥𝐨𝐫</b>    : {color}
-┠ <b>𝐅𝐮𝐞𝐥</b>     : {fuel}
-┠ <b>𝐌𝐟𝐠 𝐃𝐚𝐭𝐞</b> : {mfg_dt}
-┠ <b>𝐂𝐡𝐚𝐬𝐬𝐢𝐬</b>  : <code>{chassis}</code>
-┖ <b>𝐄𝐧𝐠𝐢𝐧𝐞</b>   : <code>{engine}</code>
-
-🛡 <b>𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 &amp; 𝐂𝐎𝐌𝐏🇱𝐈𝐀𝐍𝐂𝐄</b>
-┠ <b>𝐂𝐨𝐦𝐩𝐚𝐧𝐲</b>  : {ins_comp}
-┠ <b>𝐏𝐨𝐥𝐢𝐜𝐲</b>   : <code>{policy}</code>
-┠ <b>𝐄𝐱𝐩𝐢𝐫𝐲</b>   : {ins_upto}
-┠ <b>𝐑𝐨𝐚𝐝 𝐓𝐚𝐱</b> : {road_tax}
-┠ <b>𝐅𝐢𝐭𝐧𝐞𝐬𝐬</b>   : {fit_badge}
-┖ <b>𝐏𝐔𝐂𝐂</b>     : {puc_badge}
-
-⚖️ <b>𝐋𝐄𝐆𝐀𝐋 𝐒𝐓𝐀𝐓𝐔𝐒</b>
-┖ <b>𝐒𝐭𝐚𝐭𝐮𝐬</b>   : {status_badge}
+⚖️ <b>STATUS:</b> {status}
 
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
-✅ <b>𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋 𝐑𝐄𝐏𝐎𝐑𝐓</b>"""
+⏳ <b>SECURITY NOTICE</b>
+⚠️ <i>Ye report privacy ke chalte <b>10 minute</b> me auto-delete ho jayegi. Kripya screenshot lein.</i>"""
 
                 if not active:
                     await update_user_credits(user_id, credits - 1)
-                    ultra_report += f"\n💡 <i>Remaining Free Credits: {credits - 1}</i>"
 
                 await wait_msg.delete()
-                await message.answer(ultra_report, parse_mode="HTML")
+                report_msg = await message.answer(ultra_report, parse_mode="HTML")
+                asyncio.create_task(auto_delete_report(report_msg, 600))
             else:
-                await wait_msg.edit_text("❌ <b>Vehicle record not found in RTO Database.</b>", parse_mode="HTML")
+                await wait_msg.edit_text("❌ Vehicle record not found.", parse_mode="HTML")
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Error: {str(e)}", parse_mode="HTML")
+
+async def auto_delete_report(msg: types.Message, delay_seconds: int):
+    asyncio.sleep(delay_seconds)
+    try:
+        await msg.delete()
     except Exception:
-        await wait_msg.edit_text("❌ <b>Server Error or Timeout. Please try again.</b>", parse_mode="HTML")
+        pass
 
-# ---------------- BOT ASYNC RUNNER ----------------
-async def run_bot():
-    await init_db()
-    print("🤖 Telegram Bot thread is running...")
-    await dp.start_polling(bot)
 
-def start_bot_thread():
-    asyncio.run(run_bot())
+# ---------------- MASTER MESSAGE ROUTER ----------------
 
-# ---------------- STREAMLIT WEB WRAPPER ----------------
-# This keeps Streamlit Cloud running 24/7 on free tier
-if "bot_running" not in st.session_state:
-    st.session_state["bot_running"] = True
-    bot_thread = threading.Thread(target=start_bot_thread, daemon=True)
+@dp.message()
+async def master_message_router(message: types.Message):
+    text = message.text.strip()
+    if text.startswith("/"):
+        return
+
+    user_id = message.from_user.id
+    current_state = user_state.get(user_id)
+
+    # State-based direct handling or Auto-detection fallback
+    if current_state == "AWAITING_IFSC":
+        user_state.pop(user_id, None) # Clear state
+        await fetch_ifsc_details(message, text)
+    elif current_state == "AWAITING_VEHICLE":
+        user_state.pop(user_id, None) # Clear state
+        await fetch_vehicle_details(message, text.replace(" ", "").upper())
+    else:
+        # Smart Auto-Detection if user types directly without clicking buttons
+        clean_text = text.replace(" ", "").upper()
+        ifsc_pattern = r'^[A-Z]{4}0[A-Z0-9]{6}$'
+        
+        if re.match(ifsc_pattern, clean_text):
+            await fetch_ifsc_details(message, clean_text)
+        else:
+            await fetch_vehicle_details(message, clean_text)
+
+
+# =====================================================================
+# 🌐 MAIN ENTRY POINT
+# =====================================================================
+if __name__ == "__main__":
+    bot_thread = threading.Thread(target=lambda: asyncio.run(dp.start_polling(bot)), daemon=True)
     bot_thread.start()
 
-st.set_page_config(page_title="Vehicle Elite Bot Control Panel", page_icon="🏎")
-st.title("🏎 Vehicle Elite Telegram Bot Panel")
-st.success("🟢 Status: TELEGRAM BOT IS LIVE & RUNNING 24/7!")
-st.info("Aapka Telegram bot background thread me chal raha hai. Aap Streamlit Cloud dashboard se is link ko hamesha live rakh sakte hain.")
+    run_fastapi()
