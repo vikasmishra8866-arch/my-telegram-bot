@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import threading
+import urllib.parse
 from datetime import datetime, timedelta
 import requests
 import uvicorn
@@ -22,6 +23,8 @@ app = FastAPI()
 
 # ==================== IN-MEMORY DATABASE ====================
 user_data = {}
+# Stores active QR message info: {user_id: msg_id}
+user_qr_messages = {}
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -29,7 +32,6 @@ def get_user(user_id):
     return user_data[user_id]
 
 def is_subscribed(user_id):
-    # Admin gets instant unlimited access
     if user_id == ADMIN_ID:
         return True
     u = get_user(user_id)
@@ -46,9 +48,35 @@ def home():
 def ping():
     return {"status": "success"}
 
+# ==================== DATE HELPER FUNCTION ====================
+def check_compliance_status(date_str):
+    if not date_str or date_str in ["N/A", "NA", "None", "null", ""]:
+        return "❌ EXPIRED (N/A)"
+    
+    clean_date = date_str.split("T")[0].strip()
+    parsed_date = None
+    
+    # Try parsing common formats
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
+        try:
+            parsed_date = datetime.strptime(clean_date, fmt)
+            break
+        except ValueError:
+            pass
+
+    if parsed_date:
+        if parsed_date < datetime.now():
+            return f"❌ EXPIRED ({parsed_date.strftime('%d/%m/%Y')})"
+        else:
+            return f"✅ ACTIVE ({parsed_date.strftime('%d/%m/%Y')})"
+    
+    # Fallback status check
+    if "EXPIRE" in str(date_str).upper():
+        return f"❌ EXPIRED ({clean_date})"
+    return f"✅ ACTIVE ({clean_date})"
+
 # ==================== REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
-    # Flatten nested JSON structures automatically
     data = raw_json
     if isinstance(raw_json, dict):
         if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
@@ -61,70 +89,62 @@ def build_vehicle_report(raw_json):
     if not isinstance(data, dict):
         data = {}
 
-    # Comprehensive Multi-Key Fetcher
-    def get_val(keys, default="N/A"):
+    def get_val(keys, default=None):
         for k in keys:
             if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
                 return str(data[k]).strip()
         return default
 
-    # 1. Registration Details
-    reg_no = get_val(["reg_no", "registration_number", "rc_number", "regNo"])
-    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt", "reg_date"])
-    author = get_val(["rto", "rto_name", "registered_at", "rto_location"])
-    rto_code = get_val(["rto_code", "rc_rto_code", "rtoCode"])
-    state = get_val(["state", "state_name", "state_code"])
+    # 1. Registration Details (Author removed)
+    reg_no = get_val(["reg_no", "registration_number", "rc_number", "regNo"], "N/A")
+    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt", "reg_date"], "N/A")
+    rto_code = get_val(["rto_code", "rc_rto_code", "rtoCode"], "N/A")
+    state = get_val(["state", "state_name", "state_code"], "N/A")
     
     # 2. Ownership Analytics
     owner_1 = get_val(["owner_1_name"])
     owner_2 = get_val(["owner_2_name"])
-    if owner_1 != "N/A" and owner_2 != "N/A":
+    if owner_1 and owner_2:
         owner = f"{owner_1} | 2nd Owner: {owner_2}"
-    elif owner_1 != "N/A":
+    elif owner_1:
         owner = owner_1
     else:
-        owner = get_val(["owner_name", "rc_owner_name", "owner"])
+        owner = get_val(["owner_name", "rc_owner_name", "owner"], "N/A")
         
     sr_no = get_val(["owner_sr_no", "owner_serial", "owner_number"], "1")
     serial = f"{sr_no}st OWNER" if sr_no in ["1", "1st"] else f"{sr_no}nd OWNER" if sr_no in ["2", "2nd"] else f"{sr_no} OWNER"
-    address = get_val(["address_1", "present_address", "address", "permanent_address"])
+    address = get_val(["address_1", "present_address", "address", "permanent_address"], "N/A")
     
     # 3. Technical Specifications
-    model = get_val(["vehicle_model", "maker_modal", "model", "rc_model"])
-    maker = get_val(["maker", "maker_name", "rc_maker_desc"])
-    v_class = get_val(["vh_class", "vehicle_class", "rc_vh_class_desc"])
-    body = get_val(["body_type", "rc_body_type_desc"], "PASSENGER / CAR")
-    color = get_val(["vehicle_color", "color", "rc_color"])
-    fuel = get_val(["fuel_type", "fuel", "rc_fuel_desc"])
-    mfg_date = get_val(["manufactured_month_year", "mfg_date", "rc_manu_month_yr"])
-    chassis = get_val(["chasi_no", "chassis_number", "rc_chasi_no"])
-    engine = get_val(["engine_no", "engine_number", "rc_eng_no"])
+    model = get_val(["vehicle_model", "maker_modal", "model", "rc_model"], "N/A")
+    maker = get_val(["maker", "maker_name", "rc_maker_desc"], "N/A")
+    v_class = get_val(["vh_class", "vehicle_class", "rc_vh_class_desc"], "N/A")
     
-    # 4. Insurance & Compliance
-    ins_company = get_val(["insurance_comp", "insurance_company", "rc_insurance_comp"])
-    ins_policy = get_val(["policy_no", "insurance_policy", "rc_insurance_policy_no"])
-    ins_expiry = get_val(["insUpto", "insurance_expiry", "rc_insurance_upto"])
+    # Body Type: Show ONLY if returned validly from API
+    body_val = get_val(["body_type", "rc_body_type_desc"])
+    body_line = f"┠ 𝐁𝐨𝐝𝐲     : {body_val}\n" if body_val else ""
     
-    ins_status = "✅ ACTIVE"
-    if ins_expiry != "N/A":
-        try:
-            exp_clean = ins_expiry.split("T")[0]
-            if "/" in exp_clean:
-                exp_dt = datetime.strptime(exp_clean, "%d/%m/%Y")
-            else:
-                exp_dt = datetime.strptime(exp_clean, "%Y-%m-%d")
-            if datetime.now() > exp_dt:
-                ins_status = "⚠️ EXPIRED"
-        except Exception:
-            pass
-            
+    color = get_val(["vehicle_color", "color", "rc_color"], "N/A")
+    fuel = get_val(["fuel_type", "fuel", "rc_fuel_desc"], "N/A")
+    mfg_date = get_val(["manufactured_month_year", "mfg_date", "rc_manu_month_yr"], "N/A")
+    chassis = get_val(["chasi_no", "chassis_number", "rc_chasi_no"], "N/A")
+    engine = get_val(["engine_no", "engine_number", "rc_eng_no"], "N/A")
+    
+    # 4. Insurance & Compliance (Old Date Check Logic Applied)
+    ins_company = get_val(["insurance_comp", "insurance_company", "rc_insurance_comp"], "N/A")
+    ins_policy = get_val(["policy_no", "insurance_policy", "rc_insurance_policy_no"], "N/A")
+    ins_expiry_raw = get_val(["insUpto", "insurance_expiry", "rc_insurance_upto"])
+    ins_status = check_compliance_status(ins_expiry_raw)
+    
     road_tax = get_val(["tax_valid_upto", "road_tax"], "LTT")
-    fitness_val = get_val(["fitness_upto", "fitness_status"])
-    fitness = f"✅ {fitness_val}" if fitness_val != "N/A" else "✅ ACTIVE"
     
-    puc_val = get_val(["puc_upto", "pucc_status"])
-    pucc = f"✅ {puc_val}" if puc_val != "N/A" else "✅ Active"
-    legal_status = get_val(["status", "blacklist_status"], "✅ ACTIVE")
+    fitness_raw = get_val(["fitness_upto", "fitness_status"])
+    fitness = check_compliance_status(fitness_raw)
+    
+    puc_raw = get_val(["puc_upto", "pucc_status"])
+    pucc = check_compliance_status(puc_raw)
+    
+    legal_status = get_val(["status", "blacklist_status"], "SUCCESS")
 
     report = f"""📑 𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
@@ -132,7 +152,6 @@ def build_vehicle_report(raw_json):
 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒
 ┠ 𝐍𝐮𝐦𝐛𝐞𝐫   : {reg_no}
 ┠ 𝐃𝐚𝐭𝐞     : {reg_date}
-┠ 𝐀𝐮𝐭𝐡𝐨𝐫   : {author}
 ┠ 𝐑𝐓𝐎 𝐂𝐨𝐝𝐞 : {rto_code}
 ┖ 𝐒𝐭𝐚𝐭𝐞    : {state}
 
@@ -145,8 +164,7 @@ def build_vehicle_report(raw_json):
 ┠ 𝐌𝐨𝐝𝐞𝐥    : {model}
 ┠ 𝐌𝐚𝐤𝐞𝐫    : {maker}
 ┠ 𝐂𝐥𝐚𝐬𝐬    : {v_class}
-┠ 𝐁𝐨𝐝𝐲     : {body}
-┠ 𝐂𝐨𝐥𝐨𝐫    : {color}
+{body_line}┠ 𝐁𝐨𝐝𝐲     : {color}
 ┠ 𝐅𝐮𝐞𝐥     : {fuel}
 ┠ 𝐌𝐟𝐠 𝐃𝐚𝐭𝐞 : {mfg_date}
 ┠ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : {chassis}
@@ -155,7 +173,7 @@ def build_vehicle_report(raw_json):
 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄
 ┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 ┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
-┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_expiry} {ins_status}
+┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_status}
 ┠ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 ┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 ┖ 𝐏𝐔𝐂𝐂     : {pucc}
@@ -164,7 +182,9 @@ def build_vehicle_report(raw_json):
 ┖ 𝐒𝐭𝐚𝐭𝐞    : {legal_status}
 
 ╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
-✅ 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋."""
+✅ 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋.
+
+⏳ *Note: This message will self-destruct in 10 minutes.*"""
     return report
 
 # ==================== BOT HANDLERS ====================
@@ -174,8 +194,6 @@ async def send_welcome(message):
     u = get_user(user_id)
     
     markup = InlineKeyboardMarkup()
-    
-    # 👑 King Emoji & Special Status for Admin
     if user_id == ADMIN_ID:
         status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
         markup.add(
@@ -209,32 +227,78 @@ async def send_plan(message):
 
 async def show_buy_options(chat_id):
     markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+    markup.row(
+        InlineKeyboardButton("⚡ 24 Hour Pass (₹25)", callback_data="gen_qr_25"),
+        InlineKeyboardButton("🚀 1 Week Pass (₹90)", callback_data="gen_qr_90")
+    )
+    markup.row(
+        InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
     )
     
     plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
 
-🔥 *Enjoy Unlimited Vehicle Searches with High-Speed Access!*
+🔥 *Enjoy Unlimited Vehicle Searches with Instant Speed!*
 
-💎 **AVAILABLE PACKAGES:**
+💎 **SELECT YOUR PLAN BELOW:**
 1️⃣ **24 Hours Pass:** ₹25 (Unlimited Searches)
 2️⃣ **1 Week Pass:** ₹90 (Unlimited Searches)
 
-─────────────
-📲 **PAYMENT DETAILS:**
-• **UPI ID:** `{UPI_ID}`
-
-👇 **How to Activate Plan?**
-1. Pay amount according to your plan on above UPI ID.
-2. Take a screenshot of the completed payment.
-3. Click below button & send screenshot to Admin ({ADMIN_USERNAME}).
-4. Your plan will be activated within 2 minutes!"""
+👇 Click on a button below to generate payment QR Code!"""
     await bot.send_message(chat_id, plan_txt, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_plan")
 async def callback_buy(call):
     await show_buy_options(call.message.chat.id)
+
+# ==================== DYNAMIC QR GENERATOR HANDLER ====================
+@bot.callback_query_handler(func=lambda call: call.data in ["gen_qr_25", "gen_qr_90"])
+async def handle_qr_generation(call):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    amount = 25 if call.data == "gen_qr_25" else 90
+    plan_name = "24 Hour Pass" if amount == 25 else "1 Week Pass"
+
+    # 1. Delete previous QR message if user selects another plan
+    if user_id in user_qr_messages:
+        try:
+            await bot.delete_message(chat_id, user_qr_messages[user_id])
+        except Exception:
+            pass
+
+    # 2. Build UPI Payment String & QR Image URL
+    upi_uri = f"upi://pay?pa={UPI_ID}&pn=VehicleAudit&am={amount}&cu=INR&tn={urllib.parse.quote('VIP Plan Access')}"
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_uri)}"
+
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+    )
+
+    caption = f"""💳 **PAYMENT QR CODE FOR ₹{amount}**
+
+📌 **Plan Selected:** {plan_name}
+💰 **Amount to Pay:** ₹{amount}
+📲 **UPI ID:** `{UPI_ID}`
+
+⚠️ *Scan & Pay within 5 minutes. Take a screenshot after payment and send it to Admin ({ADMIN_USERNAME}) for instant activation.*
+
+⏳ *This QR Code will auto-expire in 5 minutes.*"""
+
+    # Send QR Code photo
+    qr_msg = await bot.send_photo(chat_id, photo=qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
+    user_qr_messages[user_id] = qr_msg.message_id
+
+    # Background task: Auto-delete QR code after 5 minutes (300 seconds)
+    async def delete_qr_later(c_id, m_id, u_id):
+        await asyncio.sleep(300)
+        try:
+            await bot.delete_message(c_id, m_id)
+            if user_qr_messages.get(u_id) == m_id:
+                del user_qr_messages[u_id]
+        except Exception:
+            pass
+
+    asyncio.create_task(delete_qr_later(chat_id, qr_msg.message_id, user_id))
 
 # ==================== ADMIN COMMANDS ====================
 @bot.message_handler(commands=['add'])
@@ -271,7 +335,7 @@ async def handle_vehicle_search(message):
     text = message.text.strip().upper().replace(" ", "").replace("-", "")
     
     if len(text) < 6 or len(text) > 12:
-        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05CX7222`", parse_mode="Markdown")
+        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05HG7801`", parse_mode="Markdown")
         return
 
     subscribed = is_subscribed(user_id)
@@ -300,7 +364,17 @@ You have used all your free searches. Please buy a plan to continue accessing ve
             report = build_vehicle_report(json_res)
             
             await bot.delete_message(message.chat.id, status_msg.message_id)
-            await bot.send_message(message.chat.id, report)
+            report_msg = await bot.send_message(message.chat.id, report, parse_mode="Markdown")
+            
+            # Auto-delete audit report after 10 minutes (600 seconds)
+            async def delete_report_later(c_id, m_id):
+                await asyncio.sleep(600)
+                try:
+                    await bot.delete_message(c_id, m_id)
+                except Exception:
+                    pass
+
+            asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
             
             # Deduct free search only for regular non-subscribed users
             if not subscribed:
