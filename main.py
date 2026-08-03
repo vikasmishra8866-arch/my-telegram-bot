@@ -74,7 +74,6 @@ def check_compliance_status(date_str):
     return clean_date
 
 # ==================== REPORT BUILDER ====================
-# ==================== UPDATED REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
     data = raw_json
     # Exact JSON parsing according to the API structure
@@ -168,8 +167,8 @@ def build_vehicle_report(raw_json):
     report = f"""╭─────────────╮
 │ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈                                
 ├──────────────────────────┤
-│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
-│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
+│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                  
+│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                   
 │ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
 │ ┝━━ 𝐌𝐟𝐠.  : {mfg_loc}                       
 │ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
@@ -191,7 +190,7 @@ def build_vehicle_report(raw_json):
 │ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                          
 │ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`                              
 │                                                           
-│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄                                
+│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉𝘾𝙀                                
 │ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}          
 │ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
 │ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
@@ -210,7 +209,7 @@ def build_vehicle_report(raw_json):
 │ 🔒 SECURE ID: #VAHAN-{reg_no}                      
 ├───────────────────────┤
 │                 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋              
-╰─────────────────────────╯
+╰─────────────────────────╯"""
     return report
 
 # ==================== BOT HANDLERS ====================
@@ -232,7 +231,7 @@ async def send_welcome(message):
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
     
-    welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
+    welcome_txt = f"""\U0001F44B **Welcome to Vehicle Audit Bot!**
 
 🚗 *Instant Vehicle RC & Owner Verification Service.*
 
@@ -429,7 +428,7 @@ You have used all your free searches. Please buy a plan to continue accessing ve
     
     try:
         url = f"{API_BASE_URL}{text}"
-        res = requests.get(url, timeout=25)
+        res = await asyncio.to_thread(requests.get, url, timeout=25)
         
         if res.status_code == 200:
             json_res = res.json()
