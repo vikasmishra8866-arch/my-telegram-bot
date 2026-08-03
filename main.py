@@ -62,7 +62,7 @@ def check_compliance_status(date_str):
     clean_date = str(date_str).split("T")[0].strip()
     parsed_date = None
     
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%m/%Y", "%m-%Y"):
         try:
             parsed_date = datetime.strptime(clean_date, fmt)
             break
@@ -70,6 +70,8 @@ def check_compliance_status(date_str):
             pass
 
     if parsed_date:
+        if len(clean_date) <= 7: # If Month/Year format
+            return parsed_date.strftime('%m/%Y')
         return parsed_date.strftime('%d/%m/%Y')
     return clean_date
 
@@ -98,34 +100,42 @@ def build_vehicle_report(raw_json):
     # 1. REGISTRATION DETAILS
     reg_no = get_val(["reg_no", "registration_number"], "NA").upper()
     reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
-    rto_location = get_val(["rto"])
+    
+    # FIX: Extract Manufacturing Month/Year instead of RTO/State name
+    mfg_raw = get_val(["manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
+    mfg_loc = check_compliance_status(mfg_raw)
+    
     state = get_val(["state"])
-    mfg_loc = rto_location if rto_location != "NA" else "NA"
 
-    # 2. OWNERSHIP ANALYTICS
+    # 2. OWNERSHIP ANALYTICS (HIGHEST OWNER LOGIC)
     owner_1 = get_val(["owner_1_name", "owner_name"])
     owner_2 = get_val(["owner_2_name"])
-    
     sr_no = get_val(["owner_sr_no", "owner_serial_no", "owner_serial"], "1")
-    if str(sr_no).isdigit():
-        sr_num = int(sr_no)
-        if sr_num == 1:
-            serial = "1st Owner"
-        elif sr_num == 2:
-            serial = "2nd Owner"
-        elif sr_num == 3:
-            serial = "3rd Owner"
-        else:
-            serial = f"{sr_num}th Owner"
-    else:
-        serial = str(sr_no)
 
-    if owner_1 != "NA" and owner_2 != "NA":
-        owner = f"1st: {owner_1}\n│ ┝━━ 2nd Owner     : {owner_2}"
+    # If 2nd Owner Name is available, prioritize highest owner
+    if owner_2 != "NA":
+        owner = owner_2
+        if str(sr_no).isdigit() and int(sr_no) > 2:
+            serial = f"{sr_no}th Owner"
+        else:
+            serial = "2nd Owner"
     elif owner_1 != "NA":
-        owner = f"1st: {owner_1}"
+        owner = owner_1
+        if str(sr_no).isdigit():
+            sr_num = int(sr_no)
+            if sr_num == 1:
+                serial = "1st Owner"
+            elif sr_num == 2:
+                serial = "2nd Owner"
+            elif sr_num == 3:
+                serial = "3rd Owner"
+            else:
+                serial = f"{sr_num}th Owner"
+        else:
+            serial = str(sr_no) if sr_no != "NA" else "1st Owner"
     else:
         owner = "NA"
+        serial = "1st Owner"
         
     address = get_val(["address_1", "address", "permanent_address"])
     
@@ -190,7 +200,7 @@ def build_vehicle_report(raw_json):
 │ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  : {serial}
 │ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}
 │
-│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒
+│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎
 │ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}
 │ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}
 │ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}
@@ -202,7 +212,7 @@ def build_vehicle_report(raw_json):
 │ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`
 │ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`
 │
-│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉𝘾𝙀
+│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪
 │ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
 │ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}
 │ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
@@ -211,14 +221,14 @@ def build_vehicle_report(raw_json):
 │ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 │ ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
 │ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}
-│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲     : {puc_val}
+│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}
 │
-│ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌𝐈𝐓 𝐒𝐓𝐀𝐓𝐔𝐒
-│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥𝐢𝐬𝐭: {blacklist}
-│ ┝━━ 𝐏𝐞𝐫𝐦𝐢𝐭   : {permit}
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}
+│ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎
+│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}
+│ ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝙨    : {status}
 ├───────────┤
-│                 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋
+│                 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱
 ╰───────────╯"""
     return report
 
