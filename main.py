@@ -44,7 +44,7 @@ def is_subscribed(user_id):
     if user_id == ADMIN_ID:
         return True
     u = user_data.get(user_id)
-    if u and u["expiry"] and datetime.now() < u["expiry"]:
+    if u and u.get("expiry") and datetime.now() < u["expiry"]:
         return True
     return False
 
@@ -59,7 +59,7 @@ def check_compliance_status(date_str):
     if not date_str or date_str in ["N/A", "NA", "None", "null", ""]:
         return "NA"
     
-    clean_date = date_str.split("T")[0].strip()
+    clean_date = str(date_str).split("T")[0].strip()
     parsed_date = None
     
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
@@ -100,21 +100,34 @@ def build_vehicle_report(raw_json):
     reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
     rto_location = get_val(["rto"])
     state = get_val(["state"])
-    mfg_loc = rto_location if rto_location != "NA" else state
+    mfg_loc = rto_location if rto_location != "NA" else "NA"
 
     # 2. OWNERSHIP ANALYTICS
-    owner_1 = get_val(["owner_1_name"])
+    owner_1 = get_val(["owner_1_name", "owner_name"])
     owner_2 = get_val(["owner_2_name"])
-    if owner_1 != "NA" and owner_2 != "NA":
-        owner = f"{owner_1} | 2nd Owner: {owner_2}"
-    elif owner_1 != "NA":
-        owner = owner_1
+    
+    sr_no = get_val(["owner_sr_no", "owner_serial_no", "owner_serial"], "1")
+    if str(sr_no).isdigit():
+        sr_num = int(sr_no)
+        if sr_num == 1:
+            serial = "1st Owner"
+        elif sr_num == 2:
+            serial = "2nd Owner"
+        elif sr_num == 3:
+            serial = "3rd Owner"
+        else:
+            serial = f"{sr_num}th Owner"
     else:
-        owner = get_val(["owner_name"])
+        serial = str(sr_no)
+
+    if owner_1 != "NA" and owner_2 != "NA":
+        owner = f"1st: {owner_1}\n│ ┝━━ 2nd Owner     : {owner_2}"
+    elif owner_1 != "NA":
+        owner = f"1st: {owner_1}"
+    else:
+        owner = "NA"
         
-    sr_no = get_val(["owner_sr_no"], "1")
-    serial = f"{sr_no}st Owner" if sr_no in ["1", "1st"] else f"{sr_no}nd Owner" if sr_no in ["2", "2nd"] else f"{sr_no} Owner"
-    address = get_val(["address_1", "address"])
+    address = get_val(["address_1", "address", "permanent_address"])
     
     # 3. TECHNICAL SPECIFICATIONS
     model = get_val(["vehicle_model"])
@@ -122,29 +135,29 @@ def build_vehicle_report(raw_json):
     model_disp = f"{model} ({variant})" if variant != "NA" and variant != model else model
     
     maker = get_val(["maker", "maker_modal"])
-    v_class = get_val(["vh_class"])
+    v_class = get_val(["vh_class", "vehicle_class"])
     body_val = get_val(["vehicle_category", "body_type"])
     
     fuel = get_val(["fuel_type"])
-    emission = get_val(["fuel_norms"])
+    emission = get_val(["fuel_norms", "norms_type"])
     
     cc_raw = get_val(["cubic_capacity"])
     cubic_cap = f"{cc_raw} cc" if cc_raw != "NA" else "NA"
     
-    seating = get_val(["no_of_seats"], "2")
-    chassis = get_val(["chasi_no"])
+    seating = get_val(["no_of_seats", "seating_capacity"], "2")
+    chassis = get_val(["chasi_no", "chassis_no"])
     engine = get_val(["engine_no"])
     
     # 4. INSURANCE & COMPLIANCE
-    ins_company = get_val(["insurance_comp"])
-    ins_policy = get_val(["policy_no"])
+    ins_company = get_val(["insurance_comp", "insurance_company"])
+    ins_policy = get_val(["policy_no", "insurance_policy_no"])
     ins_exp = check_compliance_status(get_val(["insUpto", "insurance_upto"]))
     
     raw_fin = get_val(["is_financed"]).upper()
     fin_status = "Hypothecated" if raw_fin in ["TRUE", "1", "YES"] else "No"
-    financer = get_val(["financer_name"])
+    financer = get_val(["financer_name", "financer"])
     
-    road_tax = check_compliance_status(get_val(["tax_valid_upto"]))
+    road_tax = check_compliance_status(get_val(["tax_valid_upto", "tax_upto"]))
     fitness = check_compliance_status(get_val(["fitness_upto"]))
     puc_no = get_val(["puc_no"])
     puc_val = check_compliance_status(get_val(["puc_upto"]))
@@ -152,61 +165,60 @@ def build_vehicle_report(raw_json):
     # 5. LEGAL & PERMIT STATUS
     blacklist = get_val(["blacklist_status"], "Clean")
     
-    # Extract permit nested details safely
     permit_data = data.get("permit_details", {})
     if isinstance(permit_data, dict):
         permit = permit_data.get("permit_number", "NA")
         if permit in [None, "", "null", "None"]:
             permit = "NA"
     else:
-        permit = "NA"
+        permit = get_val(["permit_no", "permit_number"], "NA")
         
     status = get_val(["status"], "SUCCESS")
 
     # EXACT BOX FORMATTING
     report = f"""╭───────────────╮
-│ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈                                
+│ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈
 ├──────────┤
-│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                  
-│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                   
-│ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
-│ ┝━━ 𝐌𝐟𝐠.  : {mfg_loc}                       
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
-│                                                           
-│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀𝐋𝐘𝐓𝐈𝐂𝐒                                  
-│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
-│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {serial}                       
-│ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                                                                                                                                                                                                                 
-│                                                           
-│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒                             
-│ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                                                                    
-│ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                 
-│ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                                                          
-│ ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_val}                                      
-│ ┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
-│ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                                  
+│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒
+│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`
+│ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}
+│ ┝━━ 𝐌𝐟𝐠.  : {mfg_loc}
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}
+│
+│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾𝙎
+│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}
+│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  : {serial}
+│ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}
+│
+│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒
+│ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}
+│ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}
+│ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}
+│ ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 : {body_val}
+│ ┝━━ 𝐅𝐮𝐞𝐥 : {fuel}
+│ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 : {emission}
 │ ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
-│ ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
-│ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                          
-│ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`                              
-│                                                           
-│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉𝘾𝙀                                
-│ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}                                                                        
-│ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
+│ ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}
+│ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`
+│ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`
+│
+│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉𝘾𝙀
+│ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
+│ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}
 │ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
-│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
-│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                   
-│ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}                                          
+│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  : {fin_status}
+│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  : {financer}
+│ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
 │ ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
-│ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                                                                                      
-│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲     : {puc_val}          
-│                                                           
-│ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌𝐈𝐓 𝐒𝐓𝐀𝐓𝐔𝐒                                  
-│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥𝐢𝐬𝐭: {blacklist}                                       
-│ ┝━━ 𝐏𝐞𝐫𝐦𝐢𝐭   : {permit}                                           
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}                                                         
+│ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}
+│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲     : {puc_val}
+│
+│ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌𝐈𝐓 𝐒𝐓𝐀𝐓𝐔𝐒
+│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥𝐢𝐬𝐭: {blacklist}
+│ ┝━━ 𝐏𝐞𝐫𝐦𝐢𝐭   : {permit}
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}
 ├───────────┤
-│                 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋              
+│                 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋
 ╰───────────╯"""
     return report
 
@@ -217,11 +229,18 @@ async def send_welcome(message):
     u = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
     
     markup = InlineKeyboardMarkup()
-    if user_id == ADMIN_ID:
-        status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
-        markup.add(
-            InlineKeyboardButton("👑 ADMIN PANEL (/panel)", callback_data="open_panel")
-        )
+    if is_subscribed(user_id):
+        if user_id == ADMIN_ID:
+            status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
+            markup.add(
+                InlineKeyboardButton("👑 ADMIN PANEL (/panel)", callback_data="open_panel")
+            )
+        else:
+            exp_str = u["expiry"].strftime('%d-%b-%Y %I:%M %p') if u.get("expiry") else "Active"
+            status_txt = f"💎 **VIP UNLIMITED ACCESS ACTIVE!**\n⏳ Valid Upto: `{exp_str}`"
+            markup.add(
+                InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+            )
     else:
         status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
         markup.add(
