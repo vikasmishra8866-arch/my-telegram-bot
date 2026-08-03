@@ -1,436 +1,284 @@
 import os
-import time
+import re
 import asyncio
-import threading
-import urllib.parse
 from datetime import datetime, timedelta
-import requests
-import uvicorn
+from typing import Dict, Any, Optional
+
+import httpx
 from fastapi import FastAPI
-import telebot
-from telebot.async_telebot import AsyncTeleBot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from fastapi.middleware.cors import CORSMiddleware
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-# ==================== CONFIGURATION ====================
-BOT_TOKEN = "8426663183:AAG1CFm0PiC7DN1zOsFqjEEEdzi7IcvdC7k"
-ADMIN_ID = 8204069256
-ADMIN_USERNAME = "@Mrx477"
-UPI_ID = "9696159863.wallet@phonepe"
-API_BASE_URL = "https://vehicle-master-api.onrender.com/api/v1/vehicle/"
+# ==========================================
+# CONFIGURATION & ENVIRONMENT VARIABLES
+# ==========================================
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+API_GATEWAY_URL = os.environ.get(
+    "API_GATEWAY_URL", 
+    "https://your-api-gateway-url.onrender.com/api/v1/vehicle"
+)  # Pass base URL without trailing slash if needed
 
-bot = AsyncTeleBot(BOT_TOKEN)
-app = FastAPI()
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "123456789").split(",") if x.strip()]
 
-# ==================== IN-MEMORY DATABASE ====================
-user_data = {}
-user_qr_messages = {}
+# In-Memory VIP Users Storage
+# Structure: { user_id: datetime_expiry_object }
+vip_users: Dict[int, datetime] = {}
 
-def get_user(user_id, first_name="User", username=""):
-    if user_id not in user_data:
-        user_data[user_id] = {
-            "first_name": first_name,
-            "username": username,
-            "free_searches": 2,
-            "expiry": None,
-            "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    else:
-        # Update name/username dynamically
-        user_data[user_id]["first_name"] = first_name
-        user_data[user_id]["username"] = username
-    return user_data[user_id]
+# ==========================================
+# FASTAPI APP (WITH HEAD REQUEST FIX)
+# ==========================================
+app = FastAPI(title="Parivahan Telegram Bot Service")
 
-def is_subscribed(user_id):
-    if user_id == ADMIN_ID:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+@app.head("/")
+def home():
+    return {
+        "status": "Online",
+        "message": "Parivahan Telegram Bot & Ping Service is Active!"
+    }
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+def clean_vno(vehicle_no: str) -> str:
+    """Cleans spaces/hyphens and forces UPPERCASE."""
+    return re.sub(r'[^A-ZA-Z0-9]', '', vehicle_no).upper()
+
+def is_vip(user_id: int) -> bool:
+    """Checks if user has active VIP access with exact time precision."""
+    if user_id in ADMIN_IDS:
         return True
-    u = user_data.get(user_id)
-    if u and u["expiry"] and datetime.now() < u["expiry"]:
-        return True
+    if user_id in vip_users:
+        expiry_time = vip_users[user_id]
+        if datetime.now() < expiry_time:
+            return True
+        else:
+            del vip_users[user_id] # Clean up expired user
     return False
 
-# ==================== WEB SERVER ====================
-@app.get("/")
-def home():
-    return {"status": "ok", "message": "Vehicle Audit Telegram Bot Admin Panel Active!"}
-
-# ==================== DATE HELPER ====================
-def check_compliance_status(date_str):
-    if not date_str or date_str in ["N/A", "NA", "None", "null", ""]:
-        return "❌ EXPIRED (N/A)"
+def format_vip_response(data: Dict[str, Any], query_no: str) -> str:
+    """Formats response according to exact requested UI design without ticks."""
     
-    clean_date = date_str.split("T")[0].strip()
-    parsed_date = None
+    # RTO Manufacturing/Location fallback
+    rto = data.get("rto", "NA")
+    state = data.get("state", "NA")
+    mfg_loc = f"{rto}, {state}" if rto != "NA" else state
+
+    reg_no = data.get("reg_no", query_no)
+    reg_dt = data.get("regn_dt", "NA")
+    owner_name = data.get("owner_name", "NA")
+    owner_sr_no = f"{data.get('owner_sr_no', '1')}st Owner" if str(data.get('owner_sr_no')).isdigit() else data.get('owner_sr_no', 'NA')
+    address = data.get("address", "NA")
     
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
-        try:
-            parsed_date = datetime.strptime(clean_date, fmt)
-            break
-        except ValueError:
-            pass
+    # Specs
+    model = data.get("vehicle_model", "NA")
+    maker = data.get("maker", "NA")
+    vh_class = data.get("vh_class", "NA")
+    body_type = "NA"
+    fuel = data.get("fuel_type", "NA")
+    emission = data.get("fuel_norms", "NA")
+    cubic_cap = f"{data.get('cubic_capacity', 'NA')} cc" if data.get('cubic_capacity') != "NA" else "NA"
+    seating = data.get("no_of_seats", "NA")
+    chassis = data.get("chasi_no", "NA")
+    engine = data.get("engine_no", "NA")
 
-    if parsed_date:
-        if parsed_date < datetime.now():
-            return f"❌ EXPIRED ({parsed_date.strftime('%d/%m/%Y')})"
-        else:
-            return f"✅ ACTIVE ({parsed_date.strftime('%d/%m/%Y')})"
-    return f"✅ ACTIVE ({clean_date})"
-
-# ==================== REPORT BUILDER ====================
-def build_vehicle_report(raw_json):
-    data = raw_json
-    if isinstance(raw_json, dict):
-        if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
-            inner = raw_json["rc_details"].get("data", raw_json["rc_details"])
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
-        elif "data" in raw_json:
-            inner = raw_json["data"]
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
-
-    if not isinstance(data, dict):
-        data = {}
-
-    def get_val(keys, default=None):
-        for k in keys:
-            if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
-                return str(data[k]).strip()
-        return default
-
-    reg_no = get_val(["reg_no", "registration_number", "rc_number", "regNo"], "N/A")
-    reg_date = get_val(["regn_dt", "registration_date", "rc_regn_dt", "reg_date"], "N/A")
-    rto_code = get_val(["rto_code", "rc_rto_code", "rtoCode"], "N/A")
-    state = get_val(["state", "state_name", "state_code"], "N/A")
+    # Insurance & Compliance
+    ins_comp = data.get("insurance_comp", "NA")
+    policy_no = data.get("policy_no", "NA")
+    ins_exp = data.get("insUpto", "NA")
     
-    owner_1 = get_val(["owner_1_name"])
-    owner_2 = get_val(["owner_2_name"])
-    if owner_1 and owner_2:
-        owner = f"{owner_1} | 2nd Owner: {owner_2}"
-    elif owner_1:
-        owner = owner_1
-    else:
-        owner = get_val(["owner_name", "rc_owner_name", "owner"], "N/A")
-        
-    sr_no = get_val(["owner_sr_no", "owner_serial", "owner_number"], "1")
-    serial = f"{sr_no}st OWNER" if sr_no in ["1", "1st"] else f"{sr_no}nd OWNER" if sr_no in ["2", "2nd"] else f"{sr_no} OWNER"
-    address = get_val(["address_1", "present_address", "address", "permanent_address"], "N/A")
+    is_fin = str(data.get("is_financed")).upper()
+    fin_status = "Hypothecated" if is_fin in ["TRUE", "1", "YES"] else "No"
+    financer = data.get("financer_name", "NA")
     
-    model = get_val(["vehicle_model", "maker_modal", "model", "rc_model"], "N/A")
-    maker = get_val(["maker", "maker_name", "rc_maker_desc"], "N/A")
-    v_class = get_val(["vh_class", "vehicle_class", "rc_vh_class_desc"], "N/A")
-    
-    body_val = get_val(["body_type", "rc_body_type_desc"])
-    body_line = f"┠ 𝐁𝐨𝐝𝐲     : {body_val}\n" if body_val else ""
-    
-    color = get_val(["vehicle_color", "color", "rc_color"], "N/A")
-    fuel = get_val(["fuel_type", "fuel", "rc_fuel_desc"], "N/A")
-    mfg_date = get_val(["manufactured_month_year", "mfg_date", "rc_manu_month_yr"], "N/A")
-    chassis = get_val(["chasi_no", "chassis_number", "rc_chasi_no"], "N/A")
-    engine = get_val(["engine_no", "engine_number", "rc_eng_no"], "N/A")
-    
-    ins_company = get_val(["insurance_comp", "insurance_company", "rc_insurance_comp"], "N/A")
-    ins_policy = get_val(["policy_no", "insurance_policy", "rc_insurance_policy_no"], "N/A")
-    ins_status = check_compliance_status(get_val(["insUpto", "insurance_expiry", "rc_insurance_upto"]))
-    
-    road_tax = get_val(["tax_valid_upto", "road_tax"], "LTT")
-    fitness = check_compliance_status(get_val(["fitness_upto", "fitness_status"]))
-    pucc = check_compliance_status(get_val(["puc_upto", "pucc_status"]))
-    legal_status = get_val(["status", "blacklist_status"], "SUCCESS")
+    road_tax = data.get("tax_valid_upto", "NA")
+    fitness = data.get("fitness_upto", "NA")
+    puc_no = data.get("puc_no", "NA")
+    puc_val = data.get("puc_upto", "NA")
 
-    report = f"""📑 𝐕𝐄𝐇𝐈𝐂𝐋𝐄 𝐀𝐔𝐃𝐈𝐓 𝐑𝐄𝐏𝐎𝐑𝐓
-╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
+    # Legal
+    blacklist = data.get("blacklist_status", "Clean")
+    permit = data.get("permit_details", {}).get("permit_number", "NA")
+    status = data.get("status", "SUCCESS")
 
-📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒
-┠ 𝐍𝐮𝐦𝐛𝐞𝐫   : {reg_no}
-┠ 𝐃𝐚𝐭𝐞     : {reg_date}
-┠ 𝐑𝐓𝐎 𝐂𝐨𝐝𝐞 : {rto_code}
-┖ 𝐒𝐭𝐚𝐭𝐞    : {state}
+    template = f"""╭───────────────────────────────────────────────────────────╮
+│ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝗧 𝙎𝙔𝙎𝙏𝙀𝙈                                
+├───────────────────────────────────────────────────────────┤
+│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
+│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
+│ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_dt}                                     
+│ ┝━━ 𝐌𝐟𝐠.  : {mfg_loc}                       
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
+│                                                           
+│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀𝐋𝐘𝐓𝐈𝐂𝐒                                  
+│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner_name}                            
+│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {owner_sr_no}                       
+│ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                              
+│                                                           
+│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒                             
+│ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model}                        
+│ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                 
+│ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {vh_class}                         
+│ ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_type}                                      
+│ ┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
+│ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                                  
+│ ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
+│ ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
+│ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                          
+│ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`                              
+│                                                           
+│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄                                
+│ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_comp}          
+│ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {policy_no}                               
+│ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
+│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
+│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                   
+│ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}                                          
+│ ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
+│ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                            
+│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲     : {puc_val}          
+│                                                           
+│ ⚖️ 𝐋𝐄𝐆𝐀🇱 & 𝐏𝐄𝐑𝐌𝐈𝐓 𝐒𝐓𝐀𝐓𝐔𝐒                                  
+│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥𝐢𝐬𝐭: {blacklist}                                       
+│ ┝━━ 𝐏𝐞𝐫𝐦𝐢𝐭   : {permit}                                           
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}                                   
+├───────────────────────────────────────────────────────────┤
+│ 🔒 SECURE ID: #VAHAN-{reg_no}                      
+├───────────────────────────────────────────────────────────┤
+│                 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀🇱              
+╰───────────────────────────────────────────────────────────╯"""
+    return template
 
-👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀𝐋𝐘𝐓𝐈𝐂𝐒
-┠ 𝐍𝐚𝐦𝐞     : {owner}
-┠ 𝐒𝐞𝐫𝐢𝐚𝐥   : {serial}
-┖ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}
-
-🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀𝐋 𝐒𝐏𝐄𝐂𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍𝐒
-┠ 𝐌𝐨𝐝𝐞𝐥    : {model}
-┠ 𝐌𝐚𝐤𝐞𝐫    : {maker}
-┠ 𝐂𝐥𝐚𝐬𝐬    : {v_class}
-{body_line}┠ 𝐂𝐨𝐥𝐨𝐫    : {color}
-┠ 𝐅𝐮𝐞𝐥     : {fuel}
-┠ 𝐌𝐟𝐠 𝐃𝐚𝐭𝐞 : {mfg_date}
-┠ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : {chassis}
-┖ 𝐄𝐧𝐠𝐢𝐧𝐞   : {engine}
-
-🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏𝐋𝐈𝐀𝐍𝐂𝐄
-┠ 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
-┠ 𝐏𝐨𝐥𝐢𝐜𝐲   : {ins_policy}
-┠ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_status}
-┠ 𝐑𝐨𝐚𝐝 𝐓𝐚x : {road_tax}
-┠ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
-┖ 𝐏𝐔𝐂𝐂     : {pucc}
-
-⚖️ 𝐋𝐄𝐆𝐀𝐋 𝐒𝐓𝐀𝐓𝐔𝐒
-┖ 𝐒𝐭𝐚𝐭𝐞    : {legal_status}
-
-╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼╼
-✅ 𝐕𝐄𝐑𝐈𝐅𝐈𝐄𝐃 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋.
-
-⏳ *Note: This message will self-destruct in 10 minutes.*"""
-    return report
-
-# ==================== BOT HANDLERS ====================
-@bot.message_handler(commands=['start'])
-async def send_welcome(message):
-    user_id = message.from_user.id
-    u = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
-    
-    markup = InlineKeyboardMarkup()
-    if user_id == ADMIN_ID:
-        status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
-        markup.add(
-            InlineKeyboardButton("👑 ADMIN PANEL (/panel)", callback_data="open_panel")
-        )
-    else:
-        status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
-        markup.add(
-            InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
-        )
-    
-    welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
-
-🚗 *Instant Vehicle RC & Owner Verification Service.*
-
-🎁 **ACCOUNT STATUS:**
-{status_txt}
-
-─────────────
-📌 **How to use?**
-Send any Vehicle Number (e.g. `GJ05HG7801`)
-─────────────"""
-    await bot.send_message(message.chat.id, welcome_txt, parse_mode="Markdown", reply_markup=markup)
-
-@bot.message_handler(commands=['buy', 'plan'])
-async def send_plan(message):
-    await show_buy_options(message.chat.id)
-
-async def show_buy_options(chat_id):
-    markup = InlineKeyboardMarkup()
-    markup.row(
-        InlineKeyboardButton("⚡ 24 Hour Pass (₹25)", callback_data="gen_qr_25"),
-        InlineKeyboardButton("🚀 1 Week Pass (₹90)", callback_data="gen_qr_90")
-    )
-    markup.row(
-        InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
-    )
-    
-    plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
-
-💎 **SELECT YOUR PLAN BELOW:**
-1️⃣ **24 Hours Pass:** ₹25
-2️⃣ **1 Week Pass:** ₹90
-
-👇 Click on a button below to generate payment QR Code!"""
-    await bot.send_message(chat_id, plan_txt, parse_mode="Markdown", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "buy_plan")
-async def callback_buy(call):
-    await show_buy_options(call.message.chat.id)
-
-# ==================== DYNAMIC QR & ADMIN ALERT ====================
-@bot.callback_query_handler(func=lambda call: call.data in ["gen_qr_25", "gen_qr_90"])
-async def handle_qr_generation(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
-    amount = 25 if call.data == "gen_qr_25" else 90
-    plan_name = "24 Hour Pass" if amount == 25 else "1 Week Pass"
-
-    if user_id in user_qr_messages:
-        try:
-            await bot.delete_message(chat_id, user_qr_messages[user_id])
-        except Exception:
-            pass
-
-    upi_uri = f"upi://pay?pa={UPI_ID}&pn=VehicleAudit&am={amount}&cu=INR&tn={urllib.parse.quote('VIP Plan Access')}"
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_uri)}"
-
-    markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+# ==========================================
+# TELEGRAM BOT HANDLERS
+# ==========================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name
+    await update.message.reply_text(
+        f"Hello {user_name}! 👋\n\nSend me any vehicle registration number to get full audit details."
     )
 
-    caption = f"""💳 **PAYMENT QR CODE FOR ₹{amount}**
+async def add_vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to grant time-based VIP access: /add <user_id> <days>"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
 
-📌 **Plan Selected:** {plan_name}
-💰 **Amount to Pay:** ₹{amount}
-📲 **UPI ID:** `{UPI_ID}`
-
-⏳ *This QR Code will auto-expire in 5 minutes.*"""
-
-    qr_msg = await bot.send_photo(chat_id, photo=qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
-    user_qr_messages[user_id] = qr_msg.message_id
-
-    # 🚨 INSTANT ALERT TO ADMIN WITH DIRECT APPROVAL BUTTONS
-    admin_markup = InlineKeyboardMarkup()
-    admin_markup.row(
-        InlineKeyboardButton("✅ Give 24h Access", callback_data=f"adm_give_{user_id}_24h"),
-        InlineKeyboardButton("✅ Give 7D Access", callback_data=f"adm_give_{user_id}_7d")
-    )
-    
-    admin_alert = f"""🔔 **NEW PAYMENT QR GENERATED!**
-
-👤 **User:** {call.from_user.first_name} (@{call.from_user.username or 'No Username'})
-🆔 **User ID:** `{user_id}`
-💰 **Plan Selected:** ₹{amount} ({plan_name})
-
-👇 *Click below button to give instant VIP Access after verifying payment:*"""
-    
     try:
-        await bot.send_message(ADMIN_ID, admin_alert, parse_mode="Markdown", reply_markup=admin_markup)
-    except Exception:
-        pass
+        args = context.args
+        target_user_id = int(args[0])
+        days = int(args[1]) if len(args) > 1 else 1
 
-    async def delete_qr_later(c_id, m_id, u_id):
-        await asyncio.sleep(300)
-        try:
-            await bot.delete_message(c_id, m_id)
-            if user_qr_messages.get(u_id) == m_id:
-                del user_qr_messages[u_id]
-        except Exception:
-            pass
+        # Calculate Exact Expiry Time (Hour, Minute, Second)
+        expiry_datetime = datetime.now() + timedelta(days=days)
+        vip_users[target_user_id] = expiry_datetime
 
-    asyncio.create_task(delete_qr_later(chat_id, qr_msg.message_id, user_id))
-
-# ==================== ADMIN PANEL COMMANDS ====================
-@bot.message_handler(commands=['panel', 'users'])
-async def show_admin_panel(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    if not user_data:
-        await bot.reply_to(message, "📊 **No users registered yet!**", parse_mode="Markdown")
-        return
-
-    txt = f"👑 **VEHICLE AUDIT BOT ADMIN PANEL**\n\nTotal Registered Users: `{len(user_data)}`\n\n"
-    
-    for uid, uinfo in list(user_data.items()):
-        status = "🟢 VIP Active" if is_subscribed(uid) else f"🔴 Free ({uinfo['free_searches']} left)"
-        txt += f"👤 **{uinfo['first_name']}** (@{uinfo['username'] or 'N/A'})\n🆔 ID: `{uid}` | Status: {status}\n"
-        
-        # Action Buttons for each user
-        markup = InlineKeyboardMarkup()
-        markup.row(
-            InlineKeyboardButton("⚡ Give 24h", callback_data=f"adm_give_{uid}_24h"),
-            InlineKeyboardButton("🚀 Give 7D", callback_data=f"adm_give_{uid}_7d"),
-            InlineKeyboardButton("❌ Revoke", callback_data=f"adm_revoke_{uid}")
+        formatted_expiry = expiry_datetime.strftime("%d/%m/%Y at %I:%M %p")
+        await update.message.reply_text(
+            f"✅ **VIP Access Granted!**\n\n"
+            f"👤 **User ID:** `{target_user_id}`\n"
+            f"⏳ **Duration:** {days} Days\n"
+            f"📅 **Exact Expiry:** {formatted_expiry}",
+            parse_mode="Markdown"
         )
-        await bot.send_message(message.chat.id, txt, parse_mode="Markdown", reply_markup=markup)
-        txt = "" # Reset text for next iteration
+    except (IndexError, ValueError):
+        await update.message.reply_text("⚠️ **Usage:** `/add <user_id> <days>`\nExample: `/add 123456789 1`", parse_mode="Markdown")
 
-# ==================== ADMIN CALLBACK BUTTON HANDLERS ====================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
-async def handle_admin_actions(call):
-    if call.from_user.id != ADMIN_ID:
-        return
+async def handle_vehicle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    parts = call.data.split("_")
-    action = parts[1]
-    target_id = int(parts[2])
-
-    u = user_data.get(target_id, {"free_searches": 2, "expiry": None})
-
-    if action == "give":
-        duration = parts[3]
-        if duration == "24h":
-            exp = datetime.now() + timedelta(hours=24)
-            p_text = "24 Hours"
-        elif duration == "7d":
-            exp = datetime.now() + timedelta(days=7)
-            p_text = "7 Days"
-
-        u["expiry"] = exp
-        user_data[target_id] = u
-
-        await bot.answer_callback_query(call.id, f"✅ VIP Plan Activated for {target_id}!")
-        await bot.send_message(ADMIN_ID, f"🎉 **VIP Plan ({p_text}) activated for User ID:** `{target_id}`", parse_mode="Markdown")
-        
-        # Send Notification to User
-        try:
-            await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan ({p_text}) has been activated by Admin 👑!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
-        except Exception:
-            pass
-
-    elif action == "revoke":
-        u["expiry"] = None
-        user_data[target_id] = u
-        await bot.answer_callback_query(call.id, f"❌ Access Revoked for {target_id}")
-        await bot.send_message(ADMIN_ID, f"❌ **Access Revoked for User ID:** `{target_id}`", parse_mode="Markdown")
-
-# ==================== VEHICLE SEARCH HANDLER ====================
-@bot.message_handler(func=lambda message: True)
-async def handle_vehicle_search(message):
-    user_id = message.from_user.id
-    u = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
-    text = message.text.strip().upper().replace(" ", "").replace("-", "")
-    
-    if len(text) < 6 or len(text) > 12:
-        await bot.reply_to(message, "⚠️ **Invalid Vehicle Number!**\nPlease send a valid number like: `GJ05HG7801`", parse_mode="Markdown")
-        return
-
-    subscribed = is_subscribed(user_id)
-    if not subscribed and u["free_searches"] <= 0:
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("💳 BUY VIP PLAN (₹25)", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+    # 1. Access Check
+    if not is_vip(user_id):
+        await update.message.reply_text(
+            "🔒 **Access Denied!**\nYou do not have active VIP access. Please contact the Admin to get access.",
+            parse_mode="Markdown"
         )
-        msg_text = f"""⚠️ **FREE TRIAL EXHAUSTED!**
-
-You have used all your free searches. Please buy a plan to continue accessing vehicle reports."""
-        await bot.send_message(message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
         return
 
-    status_msg = await bot.reply_to(message, "🔍 **Searching Official Vahan Database... Please wait...**", parse_mode="Markdown")
-    
+    raw_text = update.message.text
+    # 2. Auto-Capitalization & Cleaning
+    v_number = clean_vno(raw_text)
+
+    # Basic regex validation for Indian Vehicle Numbers
+    if len(v_number) < 6 or len(v_number) > 13:
+        await update.message.reply_text("⚠️ Please enter a valid vehicle registration number.")
+        return
+
+    status_msg = await update.message.reply_text("🔍 *Searching Vehicle Database... Please wait*", parse_mode="Markdown")
+
+    # 3. Forced Delay (7 to 10 seconds wait requirement)
+    await asyncio.sleep(7)
+
+    # 4. Fetch Details from API
     try:
-        url = f"{API_BASE_URL}{text}"
-        res = requests.get(url, timeout=25)
-        
-        if res.status_code == 200:
-            json_res = res.json()
-            report = build_vehicle_report(json_res)
-            
-            await bot.delete_message(message.chat.id, status_msg.message_id)
-            report_msg = await bot.send_message(message.chat.id, report, parse_mode="Markdown")
-            
-            async def delete_report_later(c_id, m_id):
-                await asyncio.sleep(600)
-                try:
-                    await bot.delete_message(c_id, m_id)
-                except Exception:
-                    pass
+        async with httpx.AsyncClient() as client:
+            url = f"{API_GATEWAY_URL.rstrip('/')}/{v_number}"
+            res = await client.get(url, timeout=15.0)
 
-            asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
-            
-            if not subscribed:
-                u["free_searches"] -= 1
-                if u["free_searches"] > 0:
-                    await bot.send_message(message.chat.id, f"💡 *Notice: You have {u['free_searches']} FREE search remaining!*", parse_mode="Markdown")
-                else:
-                    await bot.send_message(message.chat.id, "💡 *Notice: This was your last FREE search. Buy a plan for unlimited access!*", parse_mode="Markdown")
-        else:
-            await bot.edit_message_text("❌ **Vehicle Details Not Found!** Please check the vehicle number.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            
+            if res.status_code == 200:
+                json_data = res.json()
+                rc_details = json_data.get("rc_details", {})
+                data_list = rc_details.get("data", [])
+
+                if data_list and len(data_list) > 0:
+                    veh_data = data_list[0]
+                    
+                    # Format output using updated template
+                    final_text = format_vip_response(veh_data, v_number)
+                    await status_msg.edit_text(final_text, parse_mode="Markdown")
+                    return
+
     except Exception as e:
-        await bot.edit_message_text(f"⚠️ **Server Error / Timeout!**\nPlease try again in a few seconds.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+        print(f"API Fetch Error: {e}")
 
-# ==================== THREADED RUNNER ====================
-def start_bot_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(bot.polling(non_stop=True, timeout=60))
+    # 5. Stylish Premium "DETAIL NOT FOUND" Card Message
+    not_found_card = f"""╭────────────────────────────────────────╮
+│ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
+├────────────────────────────────────────┤
+│                                        │
+│  ❌  **DETAIL NOT FOUND**              │
+│                                        │
+│  `{v_number}` is not registered or      │
+│  records are currently unavailable.    │
+│                                        │
+│  👉  **CHECK ANOTHER VEHICLE NUMBER**  │
+│                                        │
+╰────────────────────────────────────────╯"""
 
-if __name__ == "__main__":
-    t = threading.Thread(target=start_bot_thread, daemon=True)
-    t.start()
-    
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    await status_msg.edit_text(not_found_card, parse_mode="Markdown")
+
+# ==========================================
+# BOT LIFECYCLE MANAGEMENT FOR FASTAPI
+# ==========================================
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+telegram_app.add_handler(CommandHandler("start", start_command))
+telegram_app.add_handler(CommandHandler("add", add_vip_command))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_vehicle_query))
+
+@app.on_event("startup")
+async def startup_event():
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await telegram_app.updater.stop()
+    await telegram_app.stop()
+    await telegram_app.shutdown()
