@@ -480,9 +480,9 @@ You have used all your free searches. Please buy a plan to continue accessing ve
                 else:
                     await bot.send_message(message.chat.id, "💡 *Notice: This was your last FREE search. Buy a plan for unlimited access!*", parse_mode="Markdown")
         else:
-            not_found_card = f"""╭────────────────────────────────────────╮
+            not_found_card = f"""╭───────────────╮
 │ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
-├────────────────────────────────────────┤
+├────────────┤
 │                                        │
 │  ❌  **DETAIL NOT FOUND**              │
 │                                        │
@@ -491,7 +491,7 @@ You have used all your free searches. Please buy a plan to continue accessing ve
 │                                        │
 │  👉  **CHECK ANOTHER VEHICLE NUMBER**  │
 │                                        │
-╰────────────────────────────────────────╯"""
+──────────────╯"""
             await bot.edit_message_text(not_found_card, message.chat.id, status_msg.message_id, parse_mode="Markdown")
             
     except Exception as e:
