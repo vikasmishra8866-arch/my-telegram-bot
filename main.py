@@ -56,7 +56,7 @@ def home():
 
 # ==================== DATE HELPER ====================
 def check_compliance_status(date_str):
-    if not date_str or date_str in ["N/A", "NA", "None", "null", ""]:
+    if not date_str or str(date_str).strip() in ["N/A", "NA", "None", "null", ""]:
         return "NA"
     
     clean_date = str(date_str).split("T")[0].strip()
@@ -101,44 +101,64 @@ def build_vehicle_report(raw_json):
     reg_no = get_val(["reg_no", "registration_number"], "NA").upper()
     reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
     
-    # FIX: Extract Manufacturing Month/Year instead of RTO/State name
-    mfg_raw = get_val(["manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
+    mfg_raw = get_val(["manufactured_month_year", "manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
     mfg_loc = check_compliance_status(mfg_raw)
     
     state = get_val(["state"])
 
-    # 2. OWNERSHIP ANALYTICS (HIGHEST OWNER LOGIC)
-    owner_1 = get_val(["owner_1_name", "owner_name"])
+    # 2. OWNERSHIP ANALYTICS (MULTIPLE OWNERS, ADDRESSES & HIGHEST OWNER SERIAL LOGIC)
+    owner_1 = get_val(["owner_1_name"])
     owner_2 = get_val(["owner_2_name"])
-    sr_no = get_val(["owner_sr_no", "owner_serial_no", "owner_serial"], "1")
-
-    # If 2nd Owner Name is available, prioritize highest owner
-    if owner_2 != "NA":
-        owner = owner_2
-        if str(sr_no).isdigit() and int(sr_no) > 2:
-            serial = f"{sr_no}th Owner"
-        else:
-            serial = "2nd Owner"
-    elif owner_1 != "NA":
-        owner = owner_1
-        if str(sr_no).isdigit():
-            sr_num = int(sr_no)
-            if sr_num == 1:
-                serial = "1st Owner"
-            elif sr_num == 2:
-                serial = "2nd Owner"
-            elif sr_num == 3:
-                serial = "3rd Owner"
-            else:
-                serial = f"{sr_num}th Owner"
-        else:
-            serial = str(sr_no) if sr_no != "NA" else "1st Owner"
-    else:
-        owner = "NA"
-        serial = "1st Owner"
-        
-    address = get_val(["address_1", "address", "permanent_address"])
+    main_owner = get_val(["owner_name"])
     
+    owners = []
+    if owner_1 != "NA":
+        owners.append(owner_1)
+    if owner_2 != "NA":
+        owners.append(owner_2)
+    if not owners and main_owner != "NA":
+        owners.append(main_owner)
+        
+    owner = " / ".join(owners) if owners else "NA"
+
+    # Address logic (slash separated if 2 available)
+    addr_1 = get_val(["address_1"])
+    addr_2 = get_val(["address_2"])
+    main_addr = get_val(["address", "permanent_address"])
+    
+    addresses = []
+    if addr_1 != "NA":
+        addresses.append(addr_1)
+    if addr_2 != "NA":
+        addresses.append(addr_2)
+    if not addresses and main_addr != "NA":
+        addresses.append(main_addr)
+        
+    address = " / ".join(addresses) if addresses else "NA"
+
+    # Highest owner serial number logic
+    sr_raw = data.get("owner_sr_no") or data.get("owner_serial_no") or data.get("owner_serial") or "1"
+    
+    import re
+    if isinstance(sr_raw, list):
+        nums = [int(n) for n in sr_raw if str(n).isdigit()]
+        highest_sr = max(nums) if nums else 1
+    else:
+        found_nums = re.findall(r'\d+', str(sr_raw))
+        if found_nums:
+            highest_sr = max([int(n) for n in found_nums])
+        else:
+            highest_sr = 1
+
+    if highest_sr == 1:
+        serial = "1st Owner"
+    elif highest_sr == 2:
+        serial = "2nd Owner"
+    elif highest_sr == 3:
+        serial = "3rd Owner"
+    else:
+        serial = f"{highest_sr}th Owner"
+
     # 3. TECHNICAL SPECIFICATIONS
     model = get_val(["vehicle_model"])
     variant = get_val(["variant"])
@@ -168,7 +188,7 @@ def build_vehicle_report(raw_json):
     financer = get_val(["financer_name", "financer"])
     
     road_tax = check_compliance_status(get_val(["tax_valid_upto", "tax_upto"]))
-    fitness = check_compliance_status(get_val(["fitness_upto"]))
+    rc_reg_validity = check_compliance_status(get_val(["fitness_upto", "regn_upto"]))
     puc_no = get_val(["puc_no"])
     puc_val = check_compliance_status(get_val(["puc_upto"]))
     
@@ -185,17 +205,17 @@ def build_vehicle_report(raw_json):
         
     status = get_val(["status"], "SUCCESS")
 
-    # EXACT BOX FORMATTING
+    # EXACT BOX FORMATTING WITH UPDATED FIELDS
     report = f"""╭───────────────╮
 │ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈
 ├──────────┤
 │ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒
 │ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`
 │ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}
-│ ┝━━ 𝐌𝐟𝐠.  : {mfg_loc}
+│ ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  : {mfg_loc}
 │ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}
 │
-│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾𝙎
+│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸
 │ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}
 │ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  : {serial}
 │ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}
@@ -219,14 +239,14 @@ def build_vehicle_report(raw_json):
 │ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  : {fin_status}
 │ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  : {financer}
 │ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
-│ ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness}
+│ ┝━━ 𝐑𝐂 𝐑𝐞𝐠 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲 : {rc_reg_validity}
 │ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}
 │ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}
 │
 │ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎
 │ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}
 │ ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝙨    : {status}
+│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}
 ├───────────┤
 │                 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱
 ╰───────────╯"""
@@ -258,7 +278,7 @@ async def send_welcome(message):
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
     
-    welcome_txt = f"""\U0001F44B **Welcome to Vehicle Audit Bot!**
+    welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
 
 🚗 *Instant Vehicle RC & Owner Verification Service.*
 
@@ -483,14 +503,14 @@ You have used all your free searches. Please buy a plan to continue accessing ve
             not_found_card = f"""╭───────────────╮
 │ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
 ├────────────┤
-│                                        │
-│  ❌  **DETAIL NOT FOUND**              │
-│                                        │
+│                                         │
+│  ❌  **DETAIL NOT FOUND**               │
+│                                         │
 │  `{text}` is not registered or         │
-│  records are currently unavailable.    │
-│                                        │
+│  records are currently unavailable.     │
+│                                         │
 │  👉  **CHECK ANOTHER VEHICLE NUMBER**  │
-│                                        │
+│                                         │
 ──────────────╯"""
             await bot.edit_message_text(not_found_card, message.chat.id, status_msg.message_id, parse_mode="Markdown")
             
