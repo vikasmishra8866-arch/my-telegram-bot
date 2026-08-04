@@ -187,8 +187,7 @@ def build_vehicle_report(raw_json):
     fin_status = "Hypothecated" if raw_fin in ["TRUE", "1", "YES"] else "No"
     financer = get_val(["financer_name", "financer"])
     
-    road_tax = check_compliance_status(get_val(["tax_valid_upto", "tax_upto"]))
-    rc_reg_validity = check_compliance_status(get_val(["fitness_upto", "regn_upto"]))
+    fitness_val = check_compliance_status(get_val(["fitness_upto", "regn_upto"]))
     puc_no = get_val(["puc_no"])
     puc_val = check_compliance_status(get_val(["puc_upto"]))
     
@@ -204,52 +203,54 @@ def build_vehicle_report(raw_json):
         permit = get_val(["permit_no", "permit_number"], "NA")
         
     status = get_val(["status"], "SUCCESS")
+    if status.upper() == "SUCCESS":
+        status_disp = "✅ SUCCESS"
+    else:
+        status_disp = status
 
-    # EXACT BOX FORMATTING WITH UPDATED FIELDS
-    report = f"""╭───────────────╮
-│ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈
-├──────────┤
-│ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒
-│ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`
-│ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}
-│ ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  : {mfg_loc}
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}
-│
-│ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸
-│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}
-│ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  : {serial}
-│ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}
-│
-│ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎
-│ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}
-│ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}
-│ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}
-│ ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 : {body_val}
-│ ┝━━ 𝐅𝐮𝐞𝐥 : {fuel}
-│ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 : {emission}
-│ ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
-│ ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}
-│ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`
-│ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}`
-│
-│ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪
-│ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}
-│ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}
-│ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
-│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  : {fin_status}
-│ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  : {financer}
-│ ┝━━ 𝐑𝐨𝐚𝐝 𝐓𝐚𝐱 : {road_tax}
-│ ┝━━ 𝐑𝐂 𝐑𝐞𝐠 𝐕𝐚𝐥𝐢𝐝𝐢𝐭𝐲 : {rc_reg_validity}
-│ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}
-│ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}
-│
-│ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎
-│ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}
-│ ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}
-│ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status}
-├───────────┤
-│                 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱
-╰───────────╯"""
+    # EXACT NEW FORMAT SUPPLIED BY USER
+    report = f"""╭──────────────╮
+ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈    ────────────────────────────┤
+ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
+ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
+ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
+ ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                       
+ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
+                                                         
+ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸                                  
+ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
+ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {serial}                       
+ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                              
+                                                         
+ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎                             
+ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                        
+ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                 
+ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                         
+ ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_val}                                      
+ ┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
+ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                                   
+ ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
+ ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
+ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                                  
+ ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}` 
+                                                                               
+ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪                                
+ ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}          
+ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
+ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
+ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
+ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                            
+ ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness_val}
+ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                             
+ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}          
+                                                         
+ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                                  
+ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                       
+ ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                           
+ ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                   
+├────────┤
+│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                       
+├────────┤"""
     return report
 
 # ==================== BOT HANDLERS ====================
