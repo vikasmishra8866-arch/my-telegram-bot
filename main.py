@@ -4,7 +4,7 @@ import asyncio
 import threading
 import urllib.parse
 from datetime import datetime, timedelta
-import aiohttp
+import requests
 import uvicorn
 from fastapi import FastAPI
 import telebot
@@ -12,8 +12,8 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8426663183:AAG1CFm0PiC7DN1zOsFqjEEEdzi7IcvdC7k")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 8204069256))
+BOT_TOKEN = "8426663183:AAG1CFm0PiC7DN1zOsFqjEEEdzi7IcvdC7k"
+ADMIN_ID = 8204069256
 ADMIN_USERNAME = "@Mrx477"
 UPI_ID = "9696159863.wallet@phonepe"
 API_BASE_URL = "https://vehicle-master-api.onrender.com/api/v1/vehicle/"
@@ -35,6 +35,7 @@ def get_user(user_id, first_name="User", username=""):
             "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     else:
+        # Update name/username dynamically
         user_data[user_id]["first_name"] = first_name
         user_data[user_id]["username"] = username
     return user_data[user_id]
@@ -69,7 +70,7 @@ def check_compliance_status(date_str):
             pass
 
     if parsed_date:
-        if len(clean_date) <= 7:
+        if len(clean_date) <= 7: # If Month/Year format
             return parsed_date.strftime('%m/%Y')
         return parsed_date.strftime('%d/%m/%Y')
     return clean_date
@@ -77,6 +78,7 @@ def check_compliance_status(date_str):
 # ==================== REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
     data = raw_json
+    # Exact JSON parsing according to the API structure
     if isinstance(raw_json, dict):
         if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
             inner = raw_json["rc_details"].get("data", [])
@@ -88,6 +90,7 @@ def build_vehicle_report(raw_json):
     if not isinstance(data, dict):
         data = {}
 
+    # Helper function to extract keys safely
     def get_val(keys, default="NA"):
         for k in keys:
             if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
@@ -97,31 +100,43 @@ def build_vehicle_report(raw_json):
     # 1. REGISTRATION DETAILS
     reg_no = get_val(["reg_no", "registration_number"], "NA").upper()
     reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
+    
     mfg_raw = get_val(["manufactured_month_year", "manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
     mfg_loc = check_compliance_status(mfg_raw)
+    
     state = get_val(["state"])
 
-    # 2. OWNERSHIP ANALYTICS
+    # 2. OWNERSHIP ANALYTICS (MULTIPLE OWNERS, ADDRESSES & HIGHEST OWNER SERIAL LOGIC)
     owner_1 = get_val(["owner_1_name"])
     owner_2 = get_val(["owner_2_name"])
     main_owner = get_val(["owner_name"])
     
     owners = []
-    if owner_1 != "NA": owners.append(owner_1)
-    if owner_2 != "NA": owners.append(owner_2)
-    if not owners and main_owner != "NA": owners.append(main_owner)
+    if owner_1 != "NA":
+        owners.append(owner_1)
+    if owner_2 != "NA":
+        owners.append(owner_2)
+    if not owners and main_owner != "NA":
+        owners.append(main_owner)
+        
     owner = " / ".join(owners) if owners else "NA"
 
+    # Address logic (slash separated if 2 available)
     addr_1 = get_val(["address_1"])
     addr_2 = get_val(["address_2"])
     main_addr = get_val(["address", "permanent_address"])
     
     addresses = []
-    if addr_1 != "NA": addresses.append(addr_1)
-    if addr_2 != "NA": addresses.append(addr_2)
-    if not addresses and main_addr != "NA": addresses.append(main_addr)
+    if addr_1 != "NA":
+        addresses.append(addr_1)
+    if addr_2 != "NA":
+        addresses.append(addr_2)
+    if not addresses and main_addr != "NA":
+        addresses.append(main_addr)
+        
     address = " / ".join(addresses) if addresses else "NA"
 
+    # Highest owner serial number logic
     sr_raw = data.get("owner_sr_no") or data.get("owner_serial_no") or data.get("owner_serial") or "1"
     
     import re
@@ -130,9 +145,19 @@ def build_vehicle_report(raw_json):
         highest_sr = max(nums) if nums else 1
     else:
         found_nums = re.findall(r'\d+', str(sr_raw))
-        highest_sr = max([int(n) for n in found_nums]) if found_nums else 1
+        if found_nums:
+            highest_sr = max([int(n) for n in found_nums])
+        else:
+            highest_sr = 1
 
-    serial = f"{highest_sr}st Owner" if highest_sr == 1 else f"{highest_sr}nd Owner" if highest_sr == 2 else f"{highest_sr}rd Owner" if highest_sr == 3 else f"{highest_sr}th Owner"
+    if highest_sr == 1:
+        serial = "1st Owner"
+    elif highest_sr == 2:
+        serial = "2nd Owner"
+    elif highest_sr == 3:
+        serial = "3rd Owner"
+    else:
+        serial = f"{highest_sr}th Owner"
 
     # 3. TECHNICAL SPECIFICATIONS
     model = get_val(["vehicle_model"])
@@ -142,6 +167,7 @@ def build_vehicle_report(raw_json):
     maker = get_val(["maker", "maker_modal"])
     v_class = get_val(["vh_class", "vehicle_class"])
     body_val = get_val(["vehicle_category", "body_type"])
+    
     fuel = get_val(["fuel_type"])
     emission = get_val(["fuel_norms", "norms_type"])
     
@@ -170,20 +196,26 @@ def build_vehicle_report(raw_json):
     
     permit_data = data.get("permit_details", {})
     if isinstance(permit_data, dict):
-        permit = permit_data.get("permit_number", "NA") or "NA"
+        permit = permit_data.get("permit_number", "NA")
+        if permit in [None, "", "null", "None"]:
+            permit = "NA"
     else:
         permit = get_val(["permit_no", "permit_number"], "NA")
         
     status = get_val(["status"], "SUCCESS")
-    status_disp = "✅ SUCCESS" if status.upper() == "SUCCESS" else status
+    if status.upper() == "SUCCESS":
+        status_disp = "✅ SUCCESS"
+    else:
+        status_disp = status
 
+    # EXACT NEW FORMAT SUPPLIED BY USER
     report = f"""╭──────────────╮
- 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈  ────────────────────────────┤
+ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈    ────────────────────────────┤
  📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
  ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
- ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                   
+ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
  ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                       
- ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                     
+ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
                                                          
  👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸                                  
  ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
@@ -201,19 +233,19 @@ def build_vehicle_report(raw_json):
  ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
  ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                                  
  ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}` 
-                                                                                
+                                                                               
  🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪                                
  ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}          
  ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
  ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
  ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
- ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                           
+ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                            
  ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness_val}
- ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                     
- ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥🇮𝙙🇮𝙩𝙮     : {puc_val}          
+ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                             
+ ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}          
                                                          
  ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                                  
- ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                      
+ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                       
  ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                           
  ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                   
 ├────────┤
@@ -231,19 +263,33 @@ async def send_welcome(message):
     if is_subscribed(user_id):
         if user_id == ADMIN_ID:
             status_txt = "👑 **ADMIN ACCESS: UNLIMITED SEARCHES ACTIVE!** 👑"
-            markup.add(InlineKeyboardButton("👑 ADMIN PANEL (/panel)", callback_data="open_panel"))
+            markup.add(
+                InlineKeyboardButton("👑 ADMIN PANEL (/panel)", callback_data="open_panel")
+            )
         else:
             exp_str = u["expiry"].strftime('%d-%b-%Y %I:%M %p') if u.get("expiry") else "Active"
             status_txt = f"💎 **VIP UNLIMITED ACCESS ACTIVE!**\n⏳ Valid Upto: `{exp_str}`"
-            markup.add(InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}\"))
+            markup.add(
+                InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+            )
     else:
         status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
         markup.add(
             InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}\")
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
     
-    welcome_txt = f"👋 **Welcome to Vehicle Audit Bot!**\n\n🚗 *Instant Vehicle RC & Owner Verification Service.*\n\n🎁 **ACCOUNT STATUS:**\n{status_txt}\n\n─────────────\n📌 **How to use?**\nSend any Vehicle Number (e.g. `GJ05HG7801`)\n─────────────"
+    welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
+
+🚗 *Instant Vehicle RC & Owner Verification Service.*
+
+🎁 **ACCOUNT STATUS:**
+{status_txt}
+
+─────────────
+📌 **How to use?**
+Send any Vehicle Number (e.g. `GJ05HG7801`)
+─────────────"""
     await bot.send_message(message.chat.id, welcome_txt, parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(commands=['buy', 'plan'])
@@ -256,15 +302,24 @@ async def show_buy_options(chat_id):
         InlineKeyboardButton("⚡ 24 Hour Pass (₹25)", callback_data="gen_qr_25"),
         InlineKeyboardButton("🚀 1 Week Pass (₹90)", callback_data="gen_qr_90")
     )
-    markup.row(InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}\"))
+    markup.row(
+        InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+    )
     
-    plan_txt = "🚀 **UNLIMITED VIP MEMBERSHIP PLANS**\n\n💎 **SELECT YOUR PLAN BELOW:**\n1️⃣ **24 Hours Pass:** ₹25\n2️⃣ **1 Week Pass:** ₹90\n\n👇 Click on a button below to generate payment QR Code!"
+    plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
+
+💎 **SELECT YOUR PLAN BELOW:**
+1️⃣ **24 Hours Pass:** ₹25
+2️⃣ **1 Week Pass:** ₹90
+
+👇 Click on a button below to generate payment QR Code!"""
     await bot.send_message(chat_id, plan_txt, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_plan")
 async def callback_buy(call):
     await show_buy_options(call.message.chat.id)
 
+# ==================== DYNAMIC QR & ADMIN ALERT ====================
 @bot.callback_query_handler(func=lambda call: call.data in ["gen_qr_25", "gen_qr_90"])
 async def handle_qr_generation(call):
     user_id = call.from_user.id
@@ -282,20 +337,35 @@ async def handle_qr_generation(call):
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_uri)}"
 
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}\"))
+    markup.add(
+        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+    )
 
-    caption = f"💳 **PAYMENT QR CODE FOR ₹{amount}**\n\n📌 **Plan Selected:** {plan_name}\n💰 **Amount to Pay:** ₹{amount}\n📲 **UPI ID:** `{UPI_ID}`\n\n⏳ *This QR Code will auto-expire in 5 minutes.*"
+    caption = f"""💳 **PAYMENT QR CODE FOR ₹{amount}**
+
+📌 **Plan Selected:** {plan_name}
+💰 **Amount to Pay:** ₹{amount}
+📲 **UPI ID:** `{UPI_ID}`
+
+⏳ *This QR Code will auto-expire in 5 minutes.*"""
 
     qr_msg = await bot.send_photo(chat_id, photo=qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
     user_qr_messages[user_id] = qr_msg.message_id
 
+    # 🚨 INSTANT ALERT TO ADMIN WITH DIRECT APPROVAL BUTTONS
     admin_markup = InlineKeyboardMarkup()
     admin_markup.row(
         InlineKeyboardButton("✅ Give 24h Access", callback_data=f"adm_give_{user_id}_24h"),
         InlineKeyboardButton("✅ Give 7D Access", callback_data=f"adm_give_{user_id}_7d")
     )
     
-    admin_alert = f"🔔 **NEW PAYMENT QR GENERATED!**\n\n👤 **User:** {call.from_user.first_name} (@{call.from_user.username or 'No Username'})\n🆔 **User ID:** `{user_id}`\n💰 **Plan Selected:** ₹{amount} ({plan_name})\n\n👇 *Click below button to give instant VIP Access after verifying payment:*"
+    admin_alert = f"""🔔 **NEW PAYMENT QR GENERATED!**
+
+👤 **User:** {call.from_user.first_name} (@{call.from_user.username or 'No Username'})
+🆔 **User ID:** `{user_id}`
+💰 **Plan Selected:** ₹{amount} ({plan_name})
+
+👇 *Click below button to give instant VIP Access after verifying payment:*"""
     
     try:
         await bot.send_message(ADMIN_ID, admin_alert, parse_mode="Markdown", reply_markup=admin_markup)
@@ -313,7 +383,72 @@ async def handle_qr_generation(call):
 
     asyncio.create_task(delete_qr_later(chat_id, qr_msg.message_id, user_id))
 
-# ==================== VEHICLE SEARCH HANDLER (ASYNC HTTP FIX) ====================
+# ==================== ADMIN PANEL COMMANDS ====================
+@bot.message_handler(commands=['panel', 'users'])
+async def show_admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    if not user_data:
+        await bot.reply_to(message, "📊 **No users registered yet!**", parse_mode="Markdown")
+        return
+
+    txt = f"👑 **VEHICLE AUDIT BOT ADMIN PANEL**\n\nTotal Registered Users: `{len(user_data)}`\n\n"
+    
+    for uid, uinfo in list(user_data.items()):
+        status = "🟢 VIP Active" if is_subscribed(uid) else f"🔴 Free ({uinfo['free_searches']} left)"
+        txt += f"👤 **{uinfo['first_name']}** (@{uinfo['username'] or 'N/A'})\n🆔 ID: `{uid}` | Status: {status}\n"
+        
+        # Action Buttons for each user
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("⚡ Give 24h", callback_data=f"adm_give_{uid}_24h"),
+            InlineKeyboardButton("🚀 Give 7D", callback_data=f"adm_give_{uid}_7d"),
+            InlineKeyboardButton("❌ Revoke", callback_data=f"adm_revoke_{uid}")
+        )
+        await bot.send_message(message.chat.id, txt, parse_mode="Markdown", reply_markup=markup)
+        txt = "" # Reset text for next iteration
+
+# ==================== ADMIN CALLBACK BUTTON HANDLERS ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
+async def handle_admin_actions(call):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    parts = call.data.split("_")
+    action = parts[1]
+    target_id = int(parts[2])
+
+    u = user_data.get(target_id, {"free_searches": 2, "expiry": None})
+
+    if action == "give":
+        duration = parts[3]
+        if duration == "24h":
+            exp = datetime.now() + timedelta(hours=24)
+            p_text = "24 Hours"
+        elif duration == "7d":
+            exp = datetime.now() + timedelta(days=7)
+            p_text = "7 Days"
+
+        u["expiry"] = exp
+        user_data[target_id] = u
+
+        await bot.answer_callback_query(call.id, f"✅ VIP Plan Activated for {target_id}!")
+        await bot.send_message(ADMIN_ID, f"🎉 **VIP Plan ({p_text}) activated for User ID:** `{target_id}`", parse_mode="Markdown")
+        
+        # Send Notification to User
+        try:
+            await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan ({p_text}) has been activated by Admin 👑!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    elif action == "revoke":
+        u["expiry"] = None
+        user_data[target_id] = u
+        await bot.answer_callback_query(call.id, f"❌ Access Revoked for {target_id}")
+        await bot.send_message(ADMIN_ID, f"❌ **Access Revoked for User ID:** `{target_id}`", parse_mode="Markdown")
+
+# ==================== VEHICLE SEARCH HANDLER ====================
 @bot.message_handler(func=lambda message: True)
 async def handle_vehicle_search(message):
     user_id = message.from_user.id
@@ -329,9 +464,11 @@ async def handle_vehicle_search(message):
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton("💳 BUY VIP PLAN (₹25)", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}\")
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
-        msg_text = "⚠️ **FREE TRIAL EXHAUSTED!**\n\nYou have used all your free searches. Please buy a plan to continue accessing vehicle reports."
+        msg_text = f"""⚠️ **FREE TRIAL EXHAUSTED!**
+
+You have used all your free searches. Please buy a plan to continue accessing vehicle reports."""
         await bot.send_message(message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
         return
 
@@ -339,45 +476,53 @@ async def handle_vehicle_search(message):
     
     try:
         url = f"{API_BASE_URL}{text}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        res = await asyncio.to_thread(requests.get, url, timeout=25)
         
-        # Async HTTP Request using aiohttp to prevent API freezing
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as res:
-                if res.status == 200:
-                    json_res = await res.json()
-                    report = build_vehicle_report(json_res)
-                    
-                    await bot.delete_message(message.chat.id, status_msg.message_id)
-                    report_msg = await bot.send_message(message.chat.id, report, parse_mode="Markdown")
-                    
-                    async def delete_report_later(c_id, m_id):
-                        await asyncio.sleep(600)
-                        try:
-                            await bot.delete_message(c_id, m_id)
-                        except Exception:
-                            pass
+        if res.status_code == 200:
+            json_res = res.json()
+            report = build_vehicle_report(json_res)
+            
+            await bot.delete_message(message.chat.id, status_msg.message_id)
+            report_msg = await bot.send_message(message.chat.id, report, parse_mode="Markdown")
+            
+            async def delete_report_later(c_id, m_id):
+                await asyncio.sleep(600)
+                try:
+                    await bot.delete_message(c_id, m_id)
+                except Exception:
+                    pass
 
-                    asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
-                    
-                    if not subscribed:
-                        u["free_searches"] -= 1
-                        if u["free_searches"] > 0:
-                            await bot.send_message(message.chat.id, f"💡 *Notice: You have {u['free_searches']} FREE search remaining!*", parse_mode="Markdown")
-                        else:
-                            await bot.send_message(message.chat.id, "💡 *Notice: This was your last FREE search. Buy a plan for unlimited access!*", parse_mode="Markdown")
+            asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
+            
+            if not subscribed:
+                u["free_searches"] -= 1
+                if u["free_searches"] > 0:
+                    await bot.send_message(message.chat.id, f"💡 *Notice: You have {u['free_searches']} FREE search remaining!*", parse_mode="Markdown")
                 else:
-                    not_found_card = f"╭───────────────╮\n│ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │\n├────────────┤\n│                                         │\n│  ❌  **DETAIL NOT FOUND**               │\n│                                         │\n│  `{text}` is not registered or         │\n│  records are currently unavailable.     │\n│                                         │\n│  👉  **CHECK ANOTHER VEHICLE NUMBER**  │\n│                                         │\n──────────────╯"
-                    await bot.edit_message_text(not_found_card, message.chat.id, status_msg.message_id, parse_mode="Markdown")
+                    await bot.send_message(message.chat.id, "💡 *Notice: This was your last FREE search. Buy a plan for unlimited access!*", parse_mode="Markdown")
+        else:
+            not_found_card = f"""╭───────────────╮
+│ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
+├────────────┤
+│                                         │
+│  ❌  **DETAIL NOT FOUND**               │
+│                                         │
+│  `{text}` is not registered or         │
+│  records are currently unavailable.     │
+│                                         │
+│  👉  **CHECK ANOTHER VEHICLE NUMBER**  │
+│                                         │
+──────────────╯"""
+            await bot.edit_message_text(not_found_card, message.chat.id, status_msg.message_id, parse_mode="Markdown")
             
     except Exception as e:
-        await bot.edit_message_text("⚠️ **Server Error / Timeout!**\nPlease try again in a few seconds.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
+        await bot.edit_message_text(f"⚠️ **Server Error / Timeout!**\nPlease try again in a few seconds.", message.chat.id, status_msg.message_id, parse_mode="Markdown")
 
-# ==================== BOT RUNNER ====================
+# ==================== THREADED RUNNER ====================
 def start_bot_thread():
-    asyncio.run(bot.polling(non_stop=True, timeout=60))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(bot.polling(non_stop=True, timeout=60))
 
 if __name__ == "__main__":
     t = threading.Thread(target=start_bot_thread, daemon=True)
