@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import asyncio
 import threading
 import urllib.parse
@@ -10,6 +11,8 @@ from fastapi import FastAPI
 import telebot
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from google import genai
+from google.genai import types
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8426663183:AAG1CFm0PiC7DN1zOsFqjEEEdzi7IcvdC7k"
@@ -18,8 +21,87 @@ ADMIN_USERNAME = "@Mrx477"
 UPI_ID = "9696159863.wallet@phonepe"
 API_BASE_URL = "https://vehicle-master-api.onrender.com/api/v1/vehicle/"
 
+# Gemini API Key Setup (Environment Variable with Direct Fallback)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KTdpvqaoByPb4AWLZv0w0JoD6cDWTX5EMVxX_9NMQMaQ")
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
 bot = AsyncTeleBot(BOT_TOKEN)
 app = FastAPI()
+
+# ==================== GEMINI SYSTEM PROMPT ====================
+SYSTEM_INSTRUCTION = """
+You are an expert, highly accurate Vehicle Data Processing AI. Your role is to merge raw JSON responses from Vehicle RTO APIs into a single, sanitized, and perfectly structured JSON object.
+
+Follow these STRICT rules without exception:
+
+1. OUTPUT FORMAT:
+- You must output ONLY a valid, raw JSON object. 
+- Do NOT include markdown code blocks (like ```json), commentary, or extra conversational text.
+
+2. OWNER NAME & ADDRESS RESOLUTION RULES:
+- Compare the owner serial count/number from the input data.
+- If one API/field has a higher owner serial/count (e.g., 2nd Owner vs 1st Owner), use the Owner Name associated with the higher owner count as primary 'owner_name'.
+- If owner serial/count is "NA", missing, or equal across inputs:
+  - If different owner names exist, join them with a slash: "API1_Owner / API2_Owner".
+  - If different addresses exist, join them with a slash: "API1_Address / API2_Address".
+  - Remove duplicate values if both inputs report the exact same name or address.
+- Always report the highest available owner serial string in 'owner_serial' (e.g., "1st Owner", "2nd Owner", "3rd Owner").
+
+3. AI TECHNICAL SPECIFICATION ENRICHMENT (DO NOT rely only on API):
+- The following technical fields MUST be intelligently filled using your internal official database/knowledge based on the vehicle's Maker, Model, Variant, and Registration/Manufacturing Year:
+  - 'cubic_capacity' (Append ' cc' if numeric, e.g., '109.0 cc')
+  - 'unladen_weight' (Append ' kg' if available, e.g., '105 kg')
+  - 'wheelbase' (Append ' mm' if available, e.g., '1260 mm')
+  - 'number_of_cylinders' (e.g., "1" or "4")
+  - 'emission_norm' (e.g., "BHARAT STAGE VI" or "BS IV")
+  - 'seating_capacity'
+  - 'fuel_type'
+- FALLBACK: If the model is too vague to determine these specs 100% accurately, set their value strictly as "NA". Do NOT hallucinate or guess.
+
+4. DYNAMIC & OFFICIAL RTO DATA PASS-THROUGH (ZERO GUESSING):
+- Personal, registration, and legal fields MUST strictly come from the provided API response data. NEVER guess or invent these details:
+  - 'reg_no', 'reg_date', 'mfg_date', 'state', 'chassis_no', 'engine_no', 'insurance_company', 'insurance_policy', 'insurance_expiry', 'finance_status', 'financer', 'fitness_upto', 'puc_no', 'puc_expiry', 'blacklist_status', 'permit_no', 'status'
+- If any of these fields are missing or empty in the API response, strictly set the value as "NA".
+
+5. DATE & STATUS STANDARDIZATION:
+- Format all valid dates strictly as "DD/MM/YYYY" or "MM/YYYY" (for Mfg date if day is missing).
+- Set 'status' strictly as "SUCCESS" or "Active" if valid data exists.
+
+6. REQUIRED JSON KEYS SCHEMA (Do not add or omit keys):
+{
+  "reg_no": "NA",
+  "reg_date": "NA",
+  "mfg_date": "NA",
+  "state": "NA",
+  "owner_name": "NA",
+  "owner_serial": "NA",
+  "address": "NA",
+  "model": "NA",
+  "maker": "NA",
+  "v_class": "NA",
+  "body_type": "NA",
+  "fuel_type": "NA",
+  "emission_norm": "NA",
+  "cubic_capacity": "NA",
+  "seating_capacity": "NA",
+  "unladen_weight": "NA",
+  "wheelbase": "NA",
+  "number_of_cylinders": "NA",
+  "chassis_no": "NA",
+  "engine_no": "NA",
+  "insurance_company": "NA",
+  "insurance_policy": "NA",
+  "insurance_expiry": "NA",
+  "finance_status": "NA",
+  "financer": "NA",
+  "fitness_upto": "NA",
+  "puc_no": "NA",
+  "puc_expiry": "NA",
+  "blacklist_status": "NA",
+  "permit_no": "NA",
+  "status": "SUCCESS"
+}
+"""
 
 # ==================== IN-MEMORY DATABASE ====================
 user_data = {}
@@ -35,7 +117,6 @@ def get_user(user_id, first_name="User", username=""):
             "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     else:
-        # Update name/username dynamically
         user_data[user_id]["first_name"] = first_name
         user_data[user_id]["username"] = username
     return user_data[user_id]
@@ -54,202 +135,130 @@ def is_subscribed(user_id):
 def home():
     return {"status": "ok", "message": "Vehicle Audit Telegram Bot Admin Panel Active!"}
 
-# ==================== DATE HELPER ====================
-def check_compliance_status(date_str):
-    if not date_str or str(date_str).strip() in ["N/A", "NA", "None", "null", ""]:
-        return "NA"
-    
-    clean_date = str(date_str).split("T")[0].strip()
-    parsed_date = None
-    
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%m/%Y", "%m-%Y"):
-        try:
-            parsed_date = datetime.strptime(clean_date, fmt)
-            break
-        except ValueError:
-            pass
-
-    if parsed_date:
-        if len(clean_date) <= 7: # If Month/Year format
-            return parsed_date.strftime('%m/%Y')
-        return parsed_date.strftime('%d/%m/%Y')
-    return clean_date
+# ==================== GEMINI AI ENGINE ====================
+def process_data_with_gemini(raw_api_response):
+    """Passes raw API response to Gemini AI to generate clean normalized JSON"""
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=json.dumps(raw_api_response),
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.0,
+                response_mime_type="application/json"
+            )
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        print(f"Gemini API Processing Error: {e}")
+        return None
 
 # ==================== REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
-    data = raw_json
-    # Exact JSON parsing according to the API structure
-    if isinstance(raw_json, dict):
-        if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
-            inner = raw_json["rc_details"].get("data", [])
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
-        elif "data" in raw_json:
-            inner = raw_json["data"]
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
+    # 1. Process raw API via Gemini AI
+    ai_data = process_data_with_gemini(raw_json)
+    
+    # Fallback to direct raw extraction if Gemini fails
+    if not ai_data or not isinstance(ai_data, dict):
+        ai_data = {}
 
-    if not isinstance(data, dict):
-        data = {}
-
-    # Helper function to extract keys safely
-    def get_val(keys, default="NA"):
-        for k in keys:
-            if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
-                return str(data[k]).strip()
-        return default
+    def get_val(key, default="NA"):
+        val = ai_data.get(key)
+        if val in [None, "", "null", "None", "N/A", "NA"]:
+            return default
+        return str(val).strip()
 
     # 1. REGISTRATION DETAILS
-    reg_no = get_val(["reg_no", "registration_number"], "NA").upper()
-    reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
-    
-    mfg_raw = get_val(["manufactured_month_year", "manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
-    mfg_loc = check_compliance_status(mfg_raw)
-    
-    state = get_val(["state"])
+    reg_no = get_val("reg_no").upper()
+    reg_date = get_val("reg_date")
+    mfg_loc = get_val("mfg_date")
+    state = get_val("state")
 
-    # 2. OWNERSHIP ANALYTICS (MULTIPLE OWNERS, ADDRESSES & HIGHEST OWNER SERIAL LOGIC)
-    owner_1 = get_val(["owner_1_name"])
-    owner_2 = get_val(["owner_2_name"])
-    main_owner = get_val(["owner_name"])
-    
-    owners = []
-    if owner_1 != "NA":
-        owners.append(owner_1)
-    if owner_2 != "NA":
-        owners.append(owner_2)
-    if not owners and main_owner != "NA":
-        owners.append(main_owner)
-        
-    owner = " / ".join(owners) if owners else "NA"
-
-    # Address logic (slash separated if 2 available)
-    addr_1 = get_val(["address_1"])
-    addr_2 = get_val(["address_2"])
-    main_addr = get_val(["address", "permanent_address"])
-    
-    addresses = []
-    if addr_1 != "NA":
-        addresses.append(addr_1)
-    if addr_2 != "NA":
-        addresses.append(addr_2)
-    if not addresses and main_addr != "NA":
-        addresses.append(main_addr)
-        
-    address = " / ".join(addresses) if addresses else "NA"
-
-    # Highest owner serial number logic
-    sr_raw = data.get("owner_sr_no") or data.get("owner_serial_no") or data.get("owner_serial") or "1"
-    
-    import re
-    if isinstance(sr_raw, list):
-        nums = [int(n) for n in sr_raw if str(n).isdigit()]
-        highest_sr = max(nums) if nums else 1
-    else:
-        found_nums = re.findall(r'\d+', str(sr_raw))
-        if found_nums:
-            highest_sr = max([int(n) for n in found_nums])
-        else:
-            highest_sr = 1
-
-    if highest_sr == 1:
-        serial = "1st Owner"
-    elif highest_sr == 2:
-        serial = "2nd Owner"
-    elif highest_sr == 3:
-        serial = "3rd Owner"
-    else:
-        serial = f"{highest_sr}th Owner"
+    # 2. OWNERSHIP ANALYTICS
+    owner = get_val("owner_name")
+    serial = get_val("owner_serial")
+    address = get_val("address")
 
     # 3. TECHNICAL SPECIFICATIONS
-    model = get_val(["vehicle_model"])
-    variant = get_val(["variant"])
-    model_disp = f"{model} ({variant})" if variant != "NA" and variant != model else model
-    
-    maker = get_val(["maker", "maker_modal"])
-    v_class = get_val(["vh_class", "vehicle_class"])
-    body_val = get_val(["vehicle_category", "body_type"])
-    
-    fuel = get_val(["fuel_type"])
-    emission = get_val(["fuel_norms", "norms_type"])
-    
-    cc_raw = get_val(["cubic_capacity"])
-    cubic_cap = f"{cc_raw} cc" if cc_raw != "NA" else "NA"
-    
-    seating = get_val(["no_of_seats", "seating_capacity"], "2")
-    chassis = get_val(["chasi_no", "chassis_no"])
-    engine = get_val(["engine_no"])
-    
-    # 4. INSURANCE & COMPLIANCE
-    ins_company = get_val(["insurance_comp", "insurance_company"])
-    ins_policy = get_val(["policy_no", "insurance_policy_no"])
-    ins_exp = check_compliance_status(get_val(["insUpto", "insurance_upto"]))
-    
-    raw_fin = get_val(["is_financed"]).upper()
-    fin_status = "Hypothecated" if raw_fin in ["TRUE", "1", "YES"] else "No"
-    financer = get_val(["financer_name", "financer"])
-    
-    fitness_val = check_compliance_status(get_val(["fitness_upto", "regn_upto"]))
-    puc_no = get_val(["puc_no"])
-    puc_val = check_compliance_status(get_val(["puc_upto"]))
-    
-    # 5. LEGAL & PERMIT STATUS
-    blacklist = get_val(["blacklist_status"], "Clean")
-    
-    permit_data = data.get("permit_details", {})
-    if isinstance(permit_data, dict):
-        permit = permit_data.get("permit_number", "NA")
-        if permit in [None, "", "null", "None"]:
-            permit = "NA"
-    else:
-        permit = get_val(["permit_no", "permit_number"], "NA")
-        
-    status = get_val(["status"], "SUCCESS")
-    if status.upper() == "SUCCESS":
-        status_disp = "✅ SUCCESS"
-    else:
-        status_disp = status
+    model_disp = get_val("model")
+    maker = get_val("maker")
+    v_class = get_val("v_class")
+    body_val = get_val("body_type")
+    fuel = get_val("fuel_type")
+    emission = get_val("emission_norm")
+    cubic_cap = get_val("cubic_capacity")
+    seating = get_val("seating_capacity")
+    chassis = get_val("chassis_no")
+    engine = get_val("engine_no")
 
-    # EXACT NEW FORMAT SUPPLIED BY USER
+    # 4. ADDITIONAL DETAILS (ENRICHED BY GEMINI)
+    unladen_wt = get_val("unladen_weight")
+    wheelbase = get_val("wheelbase")
+    cylinders = get_val("number_of_cylinders")
+
+    # 5. INSURANCE & COMPLIANCE
+    ins_company = get_val("insurance_company")
+    ins_policy = get_val("insurance_policy")
+    ins_exp = get_val("insurance_expiry")
+    fin_status = get_val("finance_status")
+    financer = get_val("financer")
+    fitness_val = get_val("fitness_upto")
+    puc_no = get_val("puc_no")
+    puc_val = get_val("puc_expiry")
+
+    # 6. LEGAL & PERMIT STATUS
+    blacklist = get_val("blacklist_status")
+    permit = get_val("permit_no")
+    status = get_val("status")
+    status_disp = "✅ SUCCESS" if status.upper() in ["SUCCESS", "ACTIVE"] else status
+
+    # EXACT DISPLAY FORMAT WITH NEW ADDITIONAL DETAILS SECTION
     report = f"""╭──────────────╮
- 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈    ────────────────────────────┤
- 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
- ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
- ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
- ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                       
- ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
-                                                         
- 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸                                  
- ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
- ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {serial}                       
- ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                              
-                                                         
- 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎                             
- ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                        
- ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                 
- ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                         
- ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_val}                                      
- ┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
- ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                                   
- ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
- ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
- ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                                  
- ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}` 
-                                                                               
- 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪                                
- ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}          
- ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
- ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
- ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
- ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                            
- ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness_val}
- ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                             
- ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}          
-                                                         
- ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                                  
- ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                       
- ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                           
- ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                   
+🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈    ────────────────────────────┤
+📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓🇮𝙊𝙉 𝐃𝐄𝐓𝐀🇮🇱𝐒                                  
+┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
+┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                      
+┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                       
+╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
+                                                          
+👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇🇮🇵 𝘼𝙉𝘼🇱🇮𝙏🇮𝘾🇸                                  
+┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
+┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫🇮𝙖𝐥 𝐍𝐨.  :  {serial}                        
+╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                              
+                                                          
+🚘 𝐓𝐄𝐂𝐇𝐍🇮𝘾𝘼🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎                              
+┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                        
+┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                  
+┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                          
+┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_val}                                      
+┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
+┝━━ 𝐄𝐦🇮𝙨𝙨🇮𝙤𝙣 𝐍𝐨𝐫𝐦 :  {emission}                                    
+┝━━ 𝐂𝐮𝐛🇮𝙘 𝐂𝐚𝐩𝙖𝙘🇮𝙩𝙮 : {cubic_cap}
+┝━━ 𝐒𝐞𝙖𝙩🇮𝙣𝙜 𝐂𝐚𝐩𝙖𝙘🇮𝙩𝙮 : {seating}                            
+┝━━ 𝐂𝐡𝐚𝐬𝐬🇮𝙨  : `{chassis}`                                  
+╰━━ 𝐄𝐧𝐠🇮𝙣𝐞   : `{engine}` 
+                                                          
+⚙️ 𝐀𝐃𝐃🇮𝙏🇮𝙊𝙉𝘼🇱 𝐃𝐄𝐓𝐀🇮🇱𝐒
+┝━━ 𝐔𝐧𝙡𝙖𝙙𝙚𝙣 𝑾𝙚𝙞𝙜𝙝𝙩 : {unladen_wt}
+┝━━ 𝑾𝙝𝙚𝙚𝙡𝙗𝙖𝙨𝙚 : {wheelbase}
+╰━━ 𝐍𝙪𝙢𝙗𝙚𝙧 𝙊𝙛 𝘾𝙮𝙡𝙞𝙣𝙙𝙚𝙧𝙨 : {cylinders}
+                                                          
+🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪                                
+┝━━ 𝐈𝐧𝐬𝐮𝐫𝙖𝙣𝙘𝙚 𝐂𝐨𝐦𝙥𝙖𝙣𝙮  : {ins_company}          
+┝━━ 𝐏𝐨𝐥🇮𝙘𝙮 𝐍𝐨.   : {ins_policy}                                
+┝━━ 𝐄𝐱𝐩🇮𝙧𝙮   : {ins_exp}
+┝━━ 𝐅🇮𝙣𝙖𝙣𝙘𝙚 𝐒𝐭𝙖𝐭𝐮𝐬  :  {fin_status}                            
+┝━━ 𝐅🇮𝙣𝙖𝙣𝙘𝙚𝙧  :  {financer}                                            
+┝━━ 𝐅🇮𝙩𝙣𝙚𝙨𝙨   : {fitness_val}
+┝━━ 𝐏𝐔𝐂 𝐍𝙪𝙢𝙗𝙚𝙧   : {puc_no}                                             
+╰━━ 𝐏𝐔𝐂 𝐕𝙖𝙡🇮𝙙🇮𝙩𝙮     : {puc_val}          
+                                                          
+⚖️ 𝐋𝐄𝐆𝐀🇱 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                                  
+┝━━ 𝐁𝐥𝙖𝙘𝙠𝐥🇮𝙨𝙩: {blacklist}                                        
+┝━━ 𝐏𝐞𝐫𝙢🇮𝙩   : {permit}                                            
+╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                    
 ├────────┤
-│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                       
+│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                        
 ├────────┤"""
     return report
 
@@ -270,13 +279,13 @@ async def send_welcome(message):
             exp_str = u["expiry"].strftime('%d-%b-%Y %I:%M %p') if u.get("expiry") else "Active"
             status_txt = f"💎 **VIP UNLIMITED ACCESS ACTIVE!**\n⏳ Valid Upto: `{exp_str}`"
             markup.add(
-                InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+                InlineKeyboardButton("👑 CONTACT ADMIN", url=f"[https://t.me/](https://t.me/){ADMIN_USERNAME.replace('@','')}")
             )
     else:
         status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
         markup.add(
             InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"[https://t.me/](https://t.me/){ADMIN_USERNAME.replace('@','')}")
         )
     
     welcome_txt = f"""👋 **Welcome to Vehicle Audit Bot!**
@@ -303,7 +312,7 @@ async def show_buy_options(chat_id):
         InlineKeyboardButton("🚀 1 Week Pass (₹90)", callback_data="gen_qr_90")
     )
     markup.row(
-        InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+        InlineKeyboardButton("👑 CONTACT ADMIN", url=f"[https://t.me/](https://t.me/){ADMIN_USERNAME.replace('@','')}")
     )
     
     plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
@@ -334,11 +343,11 @@ async def handle_qr_generation(call):
             pass
 
     upi_uri = f"upi://pay?pa={UPI_ID}&pn=VehicleAudit&am={amount}&cu=INR&tn={urllib.parse.quote('VIP Plan Access')}"
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_uri)}"
+    qr_url = f"[https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=){urllib.parse.quote(upi_uri)}"
 
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+        InlineKeyboardButton("👑 SEND PAYMENT SCREENSHOT", url=f"[https://t.me/](https://t.me/){ADMIN_USERNAME.replace('@','')}")
     )
 
     caption = f"""💳 **PAYMENT QR CODE FOR ₹{amount}**
@@ -352,7 +361,7 @@ async def handle_qr_generation(call):
     qr_msg = await bot.send_photo(chat_id, photo=qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
     user_qr_messages[user_id] = qr_msg.message_id
 
-    # 🚨 INSTANT ALERT TO ADMIN WITH DIRECT APPROVAL BUTTONS
+    # INSTANT ALERT TO ADMIN WITH DIRECT APPROVAL BUTTONS
     admin_markup = InlineKeyboardMarkup()
     admin_markup.row(
         InlineKeyboardButton("✅ Give 24h Access", callback_data=f"adm_give_{user_id}_24h"),
@@ -399,7 +408,6 @@ async def show_admin_panel(message):
         status = "🟢 VIP Active" if is_subscribed(uid) else f"🔴 Free ({uinfo['free_searches']} left)"
         txt += f"👤 **{uinfo['first_name']}** (@{uinfo['username'] or 'N/A'})\n🆔 ID: `{uid}` | Status: {status}\n"
         
-        # Action Buttons for each user
         markup = InlineKeyboardMarkup()
         markup.row(
             InlineKeyboardButton("⚡ Give 24h", callback_data=f"adm_give_{uid}_24h"),
@@ -407,7 +415,7 @@ async def show_admin_panel(message):
             InlineKeyboardButton("❌ Revoke", callback_data=f"adm_revoke_{uid}")
         )
         await bot.send_message(message.chat.id, txt, parse_mode="Markdown", reply_markup=markup)
-        txt = "" # Reset text for next iteration
+        txt = ""
 
 # ==================== ADMIN CALLBACK BUTTON HANDLERS ====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
@@ -436,7 +444,6 @@ async def handle_admin_actions(call):
         await bot.answer_callback_query(call.id, f"✅ VIP Plan Activated for {target_id}!")
         await bot.send_message(ADMIN_ID, f"🎉 **VIP Plan ({p_text}) activated for User ID:** `{target_id}`", parse_mode="Markdown")
         
-        # Send Notification to User
         try:
             await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan ({p_text}) has been activated by Admin 👑!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
         except Exception:
@@ -464,7 +471,7 @@ async def handle_vehicle_search(message):
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton("💳 BUY VIP PLAN (₹25)", callback_data="buy_plan"),
-            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
+            InlineKeyboardButton("👑 CONTACT ADMIN", url=f"[https://t.me/](https://t.me/){ADMIN_USERNAME.replace('@','')}")
         )
         msg_text = f"""⚠️ **FREE TRIAL EXHAUSTED!**
 
@@ -480,7 +487,9 @@ You have used all your free searches. Please buy a plan to continue accessing ve
         
         if res.status_code == 200:
             json_res = res.json()
-            report = build_vehicle_report(json_res)
+            
+            # Asynchronously call Gemini AI Processor
+            report = await asyncio.to_thread(build_vehicle_report, json_res)
             
             await bot.delete_message(message.chat.id, status_msg.message_id)
             report_msg = await bot.send_message(message.chat.id, report, parse_mode="Markdown")
