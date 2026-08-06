@@ -403,7 +403,7 @@ async def handle_vehicle_search(message):
     if not subscribed and u["points"] < 5:
         markup = InlineKeyboardMarkup()
         markup.add(
-            InlineKeyboardButton("💳 ADD POINTS (₹50)", callback_data="buy_plan"),
+            InlineKeyboardButton("💳 ADD POINTS", callback_data="buy_plan"),
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
         msg_text = f"""⚠️ **INSUFFICIENT POINTS!**
