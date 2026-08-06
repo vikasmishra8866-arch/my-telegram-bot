@@ -137,13 +137,11 @@ def build_vehicle_report(raw_json):
     fin_status = "Hypothecated" if get_val(["financerName"]) != "NA" else "No"
     financer = get_val(["financerName", "financer_name", "financer"])
     
-    fitness_val = check_compliance_status(get_val(["fitness_upto", "regn_upto"], "NA"))
     puc_no = get_val(["puccNumber", "puc_no"], "NA")
     puc_val = check_compliance_status(get_val(["puccValidUpto", "puc_upto"], "NA"))
     
     # 5. LEGAL & PERMIT STATUS
     blacklist = get_val(["blacklist_status"], "Clean")
-    permit = "NA"
     
     status = get_val(["status"], "SUCCESS")
     if status.upper() in ["SUCCESS", "100"]:
@@ -182,16 +180,14 @@ def build_vehicle_report(raw_json):
  ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲    : {ins_exp}
  ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                            
  ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                     
- ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness_val}
  ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫    : {puc_no}                                   
  ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}          
                                                          
  ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                           
  ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                 
- ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                    
  ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                   
 ├────────┤
-│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                        
+│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎🇫🇫🇮𝘾🇮𝘼🇱                        
 ├────────┤"""
     return report
 
@@ -258,7 +254,7 @@ async def show_buy_options(chat_id):
 2️⃣ **₹100 Plan:** 25 Points
 3️⃣ **₹150 Plan:** 40 Points + 3 Extra Points (Total 43)
 
-*Note: Each search costs 5 points. Points are saved permanently in your account!*
+*Note: Each search costs 1 point. Points are saved permanently in your account!*
 
 👇 Click on a button below to generate payment QR Code!"""
     await bot.send_message(chat_id, plan_txt, parse_mode="Markdown", reply_markup=markup)
@@ -400,15 +396,15 @@ async def handle_vehicle_search(message):
         return
 
     subscribed = is_subscribed(user_id)
-    if not subscribed and u["points"] < 5:
+    if not subscribed and u["points"] < 1:
         markup = InlineKeyboardMarkup()
         markup.add(
-            InlineKeyboardButton("💳 ADD POINTS", callback_data="buy_plan"),
+            InlineKeyboardButton("💳 ADD POINTS (₹50)", callback_data="buy_plan"),
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
         msg_text = f"""⚠️ **INSUFFICIENT POINTS!**
 
-You need at least 5 points to perform a search. Your current balance is {u['points']} points. Please recharge to continue."""
+You need at least 1 point to perform a search. Your current balance is {u['points']} points. Please recharge to continue."""
         await bot.send_message(message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
         return
 
@@ -435,8 +431,8 @@ You need at least 5 points to perform a search. Your current balance is {u['poin
             asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
             
             if not subscribed:
-                u["points"] -= 5
-                await bot.send_message(message.chat.id, f"💡 *Notice: 5 points deducted. Remaining Points: {u['points']}*", parse_mode="Markdown")
+                u["points"] -= 1
+                await bot.send_message(message.chat.id, f"💡 *Notice: 1 point deducted. Remaining Points: {u['points']}*", parse_mode="Markdown")
         else:
             not_found_card = f"""╭───────────────╮
 │ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
