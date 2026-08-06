@@ -30,8 +30,8 @@ def get_user(user_id, first_name="User", username=""):
         user_data[user_id] = {
             "first_name": first_name,
             "username": username,
-            "free_searches": 2,
-            "points": 10,
+            "free_searches": 3,
+            "points": 3,
             "expiry": None,
             "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
