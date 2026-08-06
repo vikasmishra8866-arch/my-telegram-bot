@@ -16,7 +16,7 @@ BOT_TOKEN = "8426663183:AAG1CFm0PiC7DN1zOsFqjEEEdzi7IcvdC7k"
 ADMIN_ID = 8204069256
 ADMIN_USERNAME = "@Mrx477"
 UPI_ID = "9696159863.wallet@phonepe"
-API_BASE_URL = "https://vehicle-master-api.onrender.com/api/v1/vehicle/"
+API_BASE_URL = "https://cjpen.vercel.app/vehicle/"
 
 bot = AsyncTeleBot(BOT_TOKEN)
 app = FastAPI()
@@ -31,13 +31,15 @@ def get_user(user_id, first_name="User", username=""):
             "first_name": first_name,
             "username": username,
             "free_searches": 2,
+            "points": 10,
             "expiry": None,
             "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     else:
-        # Update name/username dynamically
         user_data[user_id]["first_name"] = first_name
         user_data[user_id]["username"] = username
+        if "points" not in user_data[user_id]:
+            user_data[user_id]["points"] = user_data[user_id].get("free_searches", 2) * 5
     return user_data[user_id]
 
 def is_subscribed(user_id):
@@ -70,7 +72,7 @@ def check_compliance_status(date_str):
             pass
 
     if parsed_date:
-        if len(clean_date) <= 7: # If Month/Year format
+        if len(clean_date) <= 7:
             return parsed_date.strftime('%m/%Y')
         return parsed_date.strftime('%d/%m/%Y')
     return clean_date
@@ -78,19 +80,13 @@ def check_compliance_status(date_str):
 # ==================== REPORT BUILDER ====================
 def build_vehicle_report(raw_json):
     data = raw_json
-    # Exact JSON parsing according to the API structure
     if isinstance(raw_json, dict):
-        if "rc_details" in raw_json and isinstance(raw_json["rc_details"], dict):
-            inner = raw_json["rc_details"].get("data", [])
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
-        elif "data" in raw_json:
-            inner = raw_json["data"]
-            data = inner[0] if isinstance(inner, list) and len(inner) > 0 else inner
+        if "data" in raw_json and isinstance(raw_json["data"], dict):
+            data = raw_json["data"]
 
     if not isinstance(data, dict):
         data = {}
 
-    # Helper function to extract keys safely
     def get_val(keys, default="NA"):
         for k in keys:
             if k in data and data[k] not in [None, "", "null", "None", "N/A", "NA"]:
@@ -98,158 +94,104 @@ def build_vehicle_report(raw_json):
         return default
 
     # 1. REGISTRATION DETAILS
-    reg_no = get_val(["reg_no", "registration_number"], "NA").upper()
-    reg_date = check_compliance_status(get_val(["regn_dt", "registration_date"]))
+    reg_no = get_val(["regNo", "reg_no", "registration_number"], "NA").upper()
+    reg_date = check_compliance_status(get_val(["regDate", "regn_dt", "registration_date"]))
     
-    mfg_raw = get_val(["manufactured_month_year", "manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
+    mfg_raw = get_val(["manufacturerMonthYear", "manufactured_month_year", "manu_month_yr", "manufacturing_date", "mfg_date", "manufacture_date", "mfg_yr"])
     mfg_loc = check_compliance_status(mfg_raw)
     
-    state = get_val(["state"])
+    state = get_val(["regAuthority", "state"])
 
-    # 2. OWNERSHIP ANALYTICS (MULTIPLE OWNERS, ADDRESSES & HIGHEST OWNER SERIAL LOGIC)
-    owner_1 = get_val(["owner_1_name"])
-    owner_2 = get_val(["owner_2_name"])
-    main_owner = get_val(["owner_name"])
+    # 2. OWNERSHIP ANALYTICS
+    owner = get_val(["owner", "owner_name"])
     
-    owners = []
-    if owner_1 != "NA":
-        owners.append(owner_1)
-    if owner_2 != "NA":
-        owners.append(owner_2)
-    if not owners and main_owner != "NA":
-        owners.append(main_owner)
-        
-    owner = " / ".join(owners) if owners else "NA"
+    serial = "1st Owner"
 
-    # Address logic (slash separated if 2 available)
-    addr_1 = get_val(["address_1"])
-    addr_2 = get_val(["address_2"])
-    main_addr = get_val(["address", "permanent_address"])
-    
-    addresses = []
-    if addr_1 != "NA":
-        addresses.append(addr_1)
-    if addr_2 != "NA":
-        addresses.append(addr_2)
-    if not addresses and main_addr != "NA":
-        addresses.append(main_addr)
-        
-    address = " / ".join(addresses) if addresses else "NA"
-
-    # Highest owner serial number logic
-    sr_raw = data.get("owner_sr_no") or data.get("owner_serial_no") or data.get("owner_serial") or "1"
-    
-    import re
-    if isinstance(sr_raw, list):
-        nums = [int(n) for n in sr_raw if str(n).isdigit()]
-        highest_sr = max(nums) if nums else 1
-    else:
-        found_nums = re.findall(r'\d+', str(sr_raw))
-        if found_nums:
-            highest_sr = max([int(n) for n in found_nums])
-        else:
-            highest_sr = 1
-
-    if highest_sr == 1:
-        serial = "1st Owner"
-    elif highest_sr == 2:
-        serial = "2nd Owner"
-    elif highest_sr == 3:
-        serial = "3rd Owner"
-    else:
-        serial = f"{highest_sr}th Owner"
+    address = get_val(["permAddress", "presentAddress", "address", "permanent_address"])
 
     # 3. TECHNICAL SPECIFICATIONS
-    model = get_val(["vehicle_model"])
+    model = get_val(["vehicle", "vehicle_model"])
     variant = get_val(["variant"])
     model_disp = f"{model} ({variant})" if variant != "NA" and variant != model else model
     
-    maker = get_val(["maker", "maker_modal"])
-    v_class = get_val(["vh_class", "vehicle_class"])
-    body_val = get_val(["vehicle_category", "body_type"])
+    maker = get_val(["manufacturer", "maker", "maker_modal"])
+    v_class = get_val(["vehicleClass", "vh_class", "vehicle_class"])
+    body_val = get_val(["vehicle_category", "body_type"], "NA")
     
-    fuel = get_val(["fuel_type"])
-    emission = get_val(["fuel_norms", "norms_type"])
+    fuel = get_val(["fuelType", "fuel_type"])
+    emission = get_val(["fuel_norms", "norms_type"], "NA")
     
-    cc_raw = get_val(["cubic_capacity"])
+    cc_raw = get_val(["cubicCapacity", "cubic_capacity"])
     cubic_cap = f"{cc_raw} cc" if cc_raw != "NA" else "NA"
     
-    seating = get_val(["no_of_seats", "seating_capacity"], "2")
-    chassis = get_val(["chasi_no", "chassis_no"])
-    engine = get_val(["engine_no"])
+    seating = get_val(["seatCapacity", "no_of_seats", "seating_capacity"], "2")
+    chassis = get_val(["chassis", "chasi_no", "chassis_no"])
+    engine = get_val(["engine", "engine_no"])
     
     # 4. INSURANCE & COMPLIANCE
-    ins_company = get_val(["insurance_comp", "insurance_company"])
-    ins_policy = get_val(["policy_no", "insurance_policy_no"])
-    ins_exp = check_compliance_status(get_val(["insUpto", "insurance_upto"]))
+    ins_company = get_val(["insuranceCompanyName", "insurance_comp", "insurance_company"])
+    ins_policy = get_val(["insurancePolicyNumber", "policy_no", "insurance_policy_no"])
+    ins_exp = check_compliance_status(get_val(["insuranceUpto", "insUpto", "insurance_upto"]))
     
-    raw_fin = get_val(["is_financed"]).upper()
-    fin_status = "Hypothecated" if raw_fin in ["TRUE", "1", "YES"] else "No"
-    financer = get_val(["financer_name", "financer"])
+    raw_fin = get_val(["isCommercial", "is_financed"]).upper()
+    fin_status = "Hypothecated" if get_val(["financerName"]) != "NA" else "No"
+    financer = get_val(["financerName", "financer_name", "financer"])
     
-    fitness_val = check_compliance_status(get_val(["fitness_upto", "regn_upto"]))
-    puc_no = get_val(["puc_no"])
-    puc_val = check_compliance_status(get_val(["puc_upto"]))
+    fitness_val = check_compliance_status(get_val(["fitness_upto", "regn_upto"], "NA"))
+    puc_no = get_val(["puccNumber", "puc_no"], "NA")
+    puc_val = check_compliance_status(get_val(["puccValidUpto", "puc_upto"], "NA"))
     
     # 5. LEGAL & PERMIT STATUS
     blacklist = get_val(["blacklist_status"], "Clean")
+    permit = "NA"
     
-    permit_data = data.get("permit_details", {})
-    if isinstance(permit_data, dict):
-        permit = permit_data.get("permit_number", "NA")
-        if permit in [None, "", "null", "None"]:
-            permit = "NA"
-    else:
-        permit = get_val(["permit_no", "permit_number"], "NA")
-        
     status = get_val(["status"], "SUCCESS")
-    if status.upper() == "SUCCESS":
+    if status.upper() in ["SUCCESS", "100"]:
         status_disp = "✅ SUCCESS"
     else:
         status_disp = status
 
-    # EXACT NEW FORMAT SUPPLIED BY USER
     report = f"""╭──────────────╮
- 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈    ────────────────────────────┤
- 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                                 
- ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                  
- ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                     
- ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                       
- ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                      
+ 🚀 𝙑𝘼𝙃𝘼𝙉 𝘿𝙀𝙀𝙋 𝘼𝙐𝘿𝙄𝙏 𝙎𝙔𝙎𝙏𝙀𝙈     ────────────────────────────┤
+ 📋 𝐑𝐄𝐆𝐈𝐒𝐓𝐑𝐀𝐓𝐈𝐎𝐍 𝐃𝐄𝐓𝐀𝐈𝐋𝐒                             
+ ┝━━ 𝐑𝐞𝐠.𝐍𝐨.    : `{reg_no}`                                 
+ ┝━━ 𝐑𝐞𝐠.𝐃𝐚𝐭𝐞.     : {reg_date}                                   
+ ┝━━ 𝐌𝐟𝐠. 𝐌𝐨𝐧𝐭𝐡/𝐘𝐞𝐚𝐫  :   {mfg_loc}                 
+ ╰━━ 𝐒𝐭𝐚𝐭𝐞.    : {state}                                     
                                                          
- 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸                                  
- ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                            
- ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {serial}                       
- ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                              
+ 👤 𝐎𝐖𝐍𝐄𝐑𝐒𝐇𝐈𝐏 𝐀𝐍𝐀🇱🇮𝙏🇮𝘾🇸                             
+ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐍𝐚𝐦𝐞     : {owner}                         
+ ┝━━ 𝐎𝐰𝐧𝐞𝐫 𝐒𝐞𝐫𝐢𝐚𝐥 𝐍𝐨.  :  {serial}                 
+ ╰━━ 𝐀𝐝𝐝𝐫𝐞𝐬𝐬  : {address}                           
                                                          
- 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊𝙉𝙎                             
- ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                        
- ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                                 
- ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                         
- ┝━━ 𝐁𝐨𝐝𝐲 𝐓𝐲𝐩𝐞 :  {body_val}                                      
+ 🚘 𝐓𝐄𝐂𝐇𝐍𝐈𝐂𝐀🇱 𝐒𝐏𝐄𝐂🇮🇫🇮𝘾𝘼𝙏🇮𝙊🇳🇸                           
+ ┝━━ 𝐌𝐨𝐝𝐞𝐥    : {model_disp}                       
+ ┝━━ 𝐌𝐚𝐤𝐞𝐫    : {maker}                           
+ ┝━━ 𝐂𝐥𝐚𝐬𝐬    : {v_class}                       
+ ┝━━ 𝐁𝐨𝑑𝘆 𝐓𝐲𝐩𝐞 :  {body_val}                                    
  ┝━━ 𝐅𝐮𝐞𝐥 :  {fuel}
- ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                                   
+ ┝━━ 𝐄𝐦𝐢𝐬𝐬𝐢𝐨𝐧 𝐍𝐨𝐫𝐦 :  {emission}                            
  ┝━━ 𝐂𝐮𝐛𝐢𝐜 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {cubic_cap}
  ┝━━ 𝐒𝐞𝐚𝐭𝐢𝐧𝐠 𝐂𝐚𝐩𝐚𝐜𝐢𝐭𝐲 : {seating}                           
- ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                                  
+ ┝━━ 𝐂𝐡𝐚𝐬𝐬𝐢𝐬  : `{chassis}`                                 
  ╰━━ 𝐄𝐧𝐠𝐢𝐧𝐞   : `{engine}` 
-                                                                               
- 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼𝙉🇨🇪                                
+                                                                                                                   
+ 🛡 𝐈𝐍𝐒𝐔𝐑𝐀𝐍𝐂𝐄 & 𝐂𝐎𝐌𝐏🇱🇮𝘼🇳🇨🇪                          
  ┝━━ 𝐈𝐧𝐬𝐮𝐫𝐚𝐧𝐜𝐞 𝐂𝐨𝐦𝐩𝐚𝐧𝐲  : {ins_company}          
- ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.   : {ins_policy}                               
- ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲   : {ins_exp}
- ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                           
- ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                            
+ ┝━━ 𝐏𝐨𝐥𝐢𝐜𝐲 𝐍𝐨.    : {ins_policy}                               
+ ┝━━ 𝐄𝐱𝐩𝐢𝐫𝐲    : {ins_exp}
+ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞 𝐒𝐭𝐚𝐭𝐮𝐬  :  {fin_status}                            
+ ┝━━ 𝐅𝐢𝐧𝐚𝐧𝐜𝐞𝐫  :  {financer}                                                     
  ┝━━ 𝐅𝐢𝐭𝐧𝐞𝐬𝐬   : {fitness_val}
- ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫   : {puc_no}                                             
+ ┝━━ 𝐏𝐔𝐂 𝐍𝐮𝐦𝐛𝐞𝐫    : {puc_no}                                   
  ╰━━ 𝐏𝐔𝐂 𝐕𝐚𝐥𝐢𝐝🇮𝙩𝙮     : {puc_val}          
                                                          
- ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                                  
- ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                       
- ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                           
+ ⚖️ 𝐋𝐄𝐆𝐀𝐋 & 𝐏𝐄𝐑𝐌🇮𝙏 𝙎𝙏𝘼𝙏𝙐𝙎                           
+ ┝━━ 𝐁𝐥𝐚𝐜𝐤𝐥🇮𝙨𝙩: {blacklist}                                 
+ ┝━━ 𝐏𝐞𝐫𝐦🇮𝙩   : {permit}                                    
  ╰━━ 𝐒𝐭𝐚𝐭𝐮𝐬    : {status_disp}                                   
 ├────────┤
-│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                       
+│ ✅ 𝐕𝐄𝐑🇮🇫🇮🇪𝐃 𝐎𝐅🇫🇮𝘾🇮𝘼🇱                        
 ├────────┤"""
     return report
 
@@ -273,9 +215,9 @@ async def send_welcome(message):
                 InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
             )
     else:
-        status_txt = f"🌟 **YOU HAVE {u['free_searches']} FREE SEARCHES AVAILABLE!** 🌟"
+        status_txt = f"🌟 **YOUR AVAILABLE POINTS: {u['points']}** 🌟"
         markup.add(
-            InlineKeyboardButton("💳 BUY UNLIMITED PLAN", callback_data="buy_plan"),
+            InlineKeyboardButton("💳 ADD POINTS / BUY PLAN", callback_data="buy_plan"),
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
     
@@ -299,18 +241,24 @@ async def send_plan(message):
 async def show_buy_options(chat_id):
     markup = InlineKeyboardMarkup()
     markup.row(
-        InlineKeyboardButton("⚡ 24 Hour Pass (₹25)", callback_data="gen_qr_25"),
-        InlineKeyboardButton("🚀 1 Week Pass (₹90)", callback_data="gen_qr_90")
+        InlineKeyboardButton("⚡ ₹50 (10 Points)", callback_data="gen_qr_50"),
+        InlineKeyboardButton("🚀 ₹100 (25 Points)", callback_data="gen_qr_100")
+    )
+    markup.row(
+        InlineKeyboardButton("🔥 ₹150 (40+3 Extra)", callback_data="gen_qr_150")
     )
     markup.row(
         InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
     )
     
-    plan_txt = f"""🚀 **UNLIMITED VIP MEMBERSHIP PLANS**
+    plan_txt = f"""🚀 **POINTS RECHARGE PLANS**
 
-💎 **SELECT YOUR PLAN BELOW:**
-1️⃣ **24 Hours Pass:** ₹25
-2️⃣ **1 Week Pass:** ₹90
+💎 **SELECT YOUR RECHARGE PLAN:**
+1️⃣ **₹50 Plan:** 10 Points
+2️⃣ **₹100 Plan:** 25 Points
+3️⃣ **₹150 Plan:** 40 Points + 3 Extra Points (Total 43)
+
+*Note: Each search costs 5 points. Points are saved permanently in your account!*
 
 👇 Click on a button below to generate payment QR Code!"""
     await bot.send_message(chat_id, plan_txt, parse_mode="Markdown", reply_markup=markup)
@@ -320,12 +268,19 @@ async def callback_buy(call):
     await show_buy_options(call.message.chat.id)
 
 # ==================== DYNAMIC QR & ADMIN ALERT ====================
-@bot.callback_query_handler(func=lambda call: call.data in ["gen_qr_25", "gen_qr_90"])
+@bot.callback_query_handler(func=lambda call: call.data in ["gen_qr_50", "gen_qr_100", "gen_qr_150"])
 async def handle_qr_generation(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
-    amount = 25 if call.data == "gen_qr_25" else 90
-    plan_name = "24 Hour Pass" if amount == 25 else "1 Week Pass"
+    if call.data == "gen_qr_50":
+        amount = 50
+        points_str = "10 Points"
+    elif call.data == "gen_qr_100":
+        amount = 100
+        points_str = "25 Points"
+    else:
+        amount = 150
+        points_str = "43 Points (40+3)"
 
     if user_id in user_qr_messages:
         try:
@@ -333,7 +288,7 @@ async def handle_qr_generation(call):
         except Exception:
             pass
 
-    upi_uri = f"upi://pay?pa={UPI_ID}&pn=VehicleAudit&am={amount}&cu=INR&tn={urllib.parse.quote('VIP Plan Access')}"
+    upi_uri = f"upi://pay?pa={UPI_ID}&pn=VehicleAudit&am={amount}&cu=INR&tn={urllib.parse.quote('Points Recharge')}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_uri)}"
 
     markup = InlineKeyboardMarkup()
@@ -343,7 +298,7 @@ async def handle_qr_generation(call):
 
     caption = f"""💳 **PAYMENT QR CODE FOR ₹{amount}**
 
-📌 **Plan Selected:** {plan_name}
+📌 **Plan Selected:** {points_str}
 💰 **Amount to Pay:** ₹{amount}
 📲 **UPI ID:** `{UPI_ID}`
 
@@ -352,20 +307,20 @@ async def handle_qr_generation(call):
     qr_msg = await bot.send_photo(chat_id, photo=qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
     user_qr_messages[user_id] = qr_msg.message_id
 
-    # 🚨 INSTANT ALERT TO ADMIN WITH DIRECT APPROVAL BUTTONS
     admin_markup = InlineKeyboardMarkup()
     admin_markup.row(
-        InlineKeyboardButton("✅ Give 24h Access", callback_data=f"adm_give_{user_id}_24h"),
-        InlineKeyboardButton("✅ Give 7D Access", callback_data=f"adm_give_{user_id}_7d")
+        InlineKeyboardButton("✅ Add 10 Pts", callback_data=f"adm_add_{user_id}_10"),
+        InlineKeyboardButton("✅ Add 25 Pts", callback_data=f"adm_add_{user_id}_25"),
+        InlineKeyboardButton("✅ Add 43 Pts", callback_data=f"adm_add_{user_id}_43")
     )
     
     admin_alert = f"""🔔 **NEW PAYMENT QR GENERATED!**
 
 👤 **User:** {call.from_user.first_name} (@{call.from_user.username or 'No Username'})
 🆔 **User ID:** `{user_id}`
-💰 **Plan Selected:** ₹{amount} ({plan_name})
+💰 **Plan Selected:** ₹{amount} ({points_str})
 
-👇 *Click below button to give instant VIP Access after verifying payment:*"""
+👇 *Click below button to give points after verifying payment:*"""
     
     try:
         await bot.send_message(ADMIN_ID, admin_alert, parse_mode="Markdown", reply_markup=admin_markup)
@@ -396,18 +351,17 @@ async def show_admin_panel(message):
     txt = f"👑 **VEHICLE AUDIT BOT ADMIN PANEL**\n\nTotal Registered Users: `{len(user_data)}`\n\n"
     
     for uid, uinfo in list(user_data.items()):
-        status = "🟢 VIP Active" if is_subscribed(uid) else f"🔴 Free ({uinfo['free_searches']} left)"
+        status = f"🟢 Points: {uinfo.get('points', 0)}"
         txt += f"👤 **{uinfo['first_name']}** (@{uinfo['username'] or 'N/A'})\n🆔 ID: `{uid}` | Status: {status}\n"
         
-        # Action Buttons for each user
         markup = InlineKeyboardMarkup()
         markup.row(
-            InlineKeyboardButton("⚡ Give 24h", callback_data=f"adm_give_{uid}_24h"),
-            InlineKeyboardButton("🚀 Give 7D", callback_data=f"adm_give_{uid}_7d"),
-            InlineKeyboardButton("❌ Revoke", callback_data=f"adm_revoke_{uid}")
+            InlineKeyboardButton("➕ 10 Pts", callback_data=f"adm_add_{uid}_10"),
+            InlineKeyboardButton("➕ 25 Pts", callback_data=f"adm_add_{uid}_25"),
+            InlineKeyboardButton("➕ 43 Pts", callback_data=f"adm_add_{uid}_43")
         )
         await bot.send_message(message.chat.id, txt, parse_mode="Markdown", reply_markup=markup)
-        txt = "" # Reset text for next iteration
+        txt = ""
 
 # ==================== ADMIN CALLBACK BUTTON HANDLERS ====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
@@ -419,34 +373,20 @@ async def handle_admin_actions(call):
     action = parts[1]
     target_id = int(parts[2])
 
-    u = user_data.get(target_id, {"free_searches": 2, "expiry": None})
+    u = get_user(target_id)
 
-    if action == "give":
-        duration = parts[3]
-        if duration == "24h":
-            exp = datetime.now() + timedelta(hours=24)
-            p_text = "24 Hours"
-        elif duration == "7d":
-            exp = datetime.now() + timedelta(days=7)
-            p_text = "7 Days"
-
-        u["expiry"] = exp
+    if action == "add":
+        pts = int(parts[3])
+        u["points"] = u.get("points", 0) + pts
         user_data[target_id] = u
 
-        await bot.answer_callback_query(call.id, f"✅ VIP Plan Activated for {target_id}!")
-        await bot.send_message(ADMIN_ID, f"🎉 **VIP Plan ({p_text}) activated for User ID:** `{target_id}`", parse_mode="Markdown")
+        await bot.answer_callback_query(call.id, f"✅ Added {pts} points for {target_id}!")
+        await bot.send_message(ADMIN_ID, f"🎉 **Successfully added {pts} points to User ID:** `{target_id}`", parse_mode="Markdown")
         
-        # Send Notification to User
         try:
-            await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour Unlimited VIP Plan ({p_text}) has been activated by Admin 👑!\nValid Upto: `{exp.strftime('%d-%b-%Y %I:%M %p')}`", parse_mode="Markdown")
+            await bot.send_message(target_id, f"🎉 **CONGRATULATIONS!**\n\nYour account has been credited with **{pts} Points** by Admin 👑!\nTotal Points: `{u['points']}`", parse_mode="Markdown")
         except Exception:
             pass
-
-    elif action == "revoke":
-        u["expiry"] = None
-        user_data[target_id] = u
-        await bot.answer_callback_query(call.id, f"❌ Access Revoked for {target_id}")
-        await bot.send_message(ADMIN_ID, f"❌ **Access Revoked for User ID:** `{target_id}`", parse_mode="Markdown")
 
 # ==================== VEHICLE SEARCH HANDLER ====================
 @bot.message_handler(func=lambda message: True)
@@ -460,15 +400,15 @@ async def handle_vehicle_search(message):
         return
 
     subscribed = is_subscribed(user_id)
-    if not subscribed and u["free_searches"] <= 0:
+    if not subscribed and u["points"] < 5:
         markup = InlineKeyboardMarkup()
         markup.add(
-            InlineKeyboardButton("💳 BUY VIP PLAN (₹25)", callback_data="buy_plan"),
+            InlineKeyboardButton("💳 ADD POINTS (₹50)", callback_data="buy_plan"),
             InlineKeyboardButton("👑 CONTACT ADMIN", url=f"https://t.me/{ADMIN_USERNAME.replace('@','')}")
         )
-        msg_text = f"""⚠️ **FREE TRIAL EXHAUSTED!**
+        msg_text = f"""⚠️ **INSUFFICIENT POINTS!**
 
-You have used all your free searches. Please buy a plan to continue accessing vehicle reports."""
+You need at least 5 points to perform a search. Your current balance is {u['points']} points. Please recharge to continue."""
         await bot.send_message(message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
         return
 
@@ -495,23 +435,20 @@ You have used all your free searches. Please buy a plan to continue accessing ve
             asyncio.create_task(delete_report_later(message.chat.id, report_msg.message_id))
             
             if not subscribed:
-                u["free_searches"] -= 1
-                if u["free_searches"] > 0:
-                    await bot.send_message(message.chat.id, f"💡 *Notice: You have {u['free_searches']} FREE search remaining!*", parse_mode="Markdown")
-                else:
-                    await bot.send_message(message.chat.id, "💡 *Notice: This was your last FREE search. Buy a plan for unlimited access!*", parse_mode="Markdown")
+                u["points"] -= 5
+                await bot.send_message(message.chat.id, f"💡 *Notice: 5 points deducted. Remaining Points: {u['points']}*", parse_mode="Markdown")
         else:
             not_found_card = f"""╭───────────────╮
 │ ⚠️ 𝙑𝘼𝙃𝘼𝙉 𝘿𝘼𝙏𝘼𝘽𝘼𝙎𝙀 𝙉𝙊𝙏𝙄𝙁𝙄𝘾𝘼𝙏𝙄𝙊𝙉         │
 ├────────────┤
-│                                         │
-│  ❌  **DETAIL NOT FOUND**               │
-│                                         │
-│  `{text}` is not registered or         │
-│  records are currently unavailable.     │
-│                                         │
-│  👉  **CHECK ANOTHER VEHICLE NUMBER**  │
-│                                         │
+│                                       │
+│  ❌  **DETAIL NOT FOUND**             │
+│                                       │
+│  `{text}` is not registered or        │
+│  records are currently unavailable.   │
+│                                       │
+│  👉  **CHECK ANOTHER VEHICLE NUMBER** │
+│                                       │
 ──────────────╯"""
             await bot.edit_message_text(not_found_card, message.chat.id, status_msg.message_id, parse_mode="Markdown")
             
